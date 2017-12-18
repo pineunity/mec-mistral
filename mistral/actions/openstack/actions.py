@@ -50,6 +50,7 @@ def _try_import(module_name):
 
 
 aodhclient = _try_import('aodhclient.v2.client')
+apmecclient = _try_import('apmecclient.v1_0.client')
 barbicanclient = _try_import('barbicanclient.client')
 ceilometerclient = _try_import('ceilometerclient.v2.client')
 cinderclient = _try_import('cinderclient.client')
@@ -875,3 +876,31 @@ class GlareAction(base.OpenStackAction):
     @classmethod
     def _get_fake_client(cls):
         return cls._get_client_class()("http://127.0.0.1:9494/")
+
+
+class ApmecAction(base.OpenStackAction):
+    _service_name = 'apmec'
+
+    @classmethod
+    def _get_client_class(cls):
+        return apmecclient.Client
+
+    def _create_client(self, context):
+
+        LOG.debug("Apmec action security context: %s", context)
+
+        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        apmec_endpoint = self.get_service_endpoint()
+
+        return self._get_client_class()(
+            endpoint_url=apmec_endpoint.url,
+            token=context.auth_token,
+            tenant_id=context.project_id,
+            region_name=apmec_endpoint.region,
+            auth_url=keystone_endpoint.url,
+            insecure=context.insecure
+        )
+
+    @classmethod
+    def _get_fake_client(cls):
+        return cls._get_client_class()()

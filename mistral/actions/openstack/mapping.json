@@ -1389,5 +1389,24 @@
         "artifacts_upload_blob": "artifacts.upload_blob",
         "artifacts_download_blob": "artifacts.download_blob",
         "artifacts_add_external_location": "artifacts.add_external_location"
+    },
+    "apmec":{
+        "_comment": "It uses apmecclient.v1_0.",
+        "list_extensions": "list_extensions",
+        "show_extension": "show_extension",
+        "create_mead": "create_mead",
+        "delete_mead": "delete_mead",
+        "list_meads": "list_meads",
+        "show_mead": "show_mead",
+        "create_mea": "create_mea",
+        "update_mea": "update_mea",
+        "delete_mea": "delete_mea",
+        "list_meas": "list_meas",
+        "show_mea": "show_mea",
+        "create_vim": "create_vim",
+        "update_vim": "update_vim",
+        "delete_vim": "delete_vim",
+        "list_vims": "list_vims",
+        "show_vim": "show_vim"
     }
 }
