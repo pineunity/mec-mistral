@@ -25,8 +25,6 @@ from oslo_db.sqlalchemy import utils as db_utils
 from oslo_log import log as logging
 from oslo_utils import uuidutils  # noqa
 import sqlalchemy as sa
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.sql.expression import Insert
 
 from mistral import context
 from mistral.db.sqlalchemy import base as b
@@ -107,12 +105,15 @@ def end_tx():
 
 
 @contextlib.contextmanager
-def transaction():
+def transaction(read_only=False):
     start_tx()
 
     try:
         yield
-        commit_tx()
+        if read_only:
+            rollback_tx()
+        else:
+            commit_tx()
     finally:
         end_tx()
 
@@ -138,6 +139,55 @@ def acquire_lock(model, id, session=None):
 def _lock_entity(model, id):
     # Get entity by ID in "FOR UPDATE" mode and expect exactly one object.
     return _secure_query(model).with_for_update().filter(model.id == id).one()
+
+
+@b.session_aware()
+def update_on_match(id, specimen, values, attempts, session=None):
+    """Updates a model with the given values if it matches the given specimen.
+
+    :param id: ID of a persistent model.
+    :param specimen: Specimen used to match the
+    :param values: Values to set to the model if fields of the object
+        match the specimen.
+    :param attempts: The function will then invoke the UPDATE statement and
+        check for "success" one or more times, up to a maximum of that passed
+        as attempts.
+    :param session: Session.
+    :return: Persistent object attached to the session.
+    """
+
+    assert id is not None
+    assert specimen is not None
+
+    # We need to flush the session because when we do update_on_match()
+    # it doesn't always update the state of the persistent object properly
+    # when it merges a specimen state into it. Some fields get wiped out from
+    # the history of ORM events that must be flushed later. For example, it
+    # doesn't work well in case of Postgres.
+    # See https://bugs.launchpad.net/mistral/+bug/1736821
+    session.flush()
+
+    model = None
+    model_class = type(specimen)
+
+    # Use WHERE clause to exclude possible conflicts if the state has
+    # already been changed.
+    try:
+        model = b.model_query(model_class).update_on_match(
+            specimen=specimen,
+            surrogate_key='id',
+            values=values,
+            attempts=attempts
+        )
+    except oslo_sqlalchemy.update_match.NoRowsMatched:
+        LOG.info(
+            "Can't change state of persistent object "
+            "because it has already been changed. [model_class=%s, id=%s, "
+            "specimen=%s, values=%s]",
+            model_class, id, specimen, values
+        )
+
+    return model
 
 
 def _secure_query(model, *columns):
@@ -211,7 +261,7 @@ def _get_collection(model, insecure=False, limit=None, marker=None,
         if fields else ()
     )
 
-    query = (b.model_query(model, *columns) if insecure
+    query = (b.model_query(model, columns=columns) if insecure
              else _secure_query(model, *columns))
     query = db_filters.apply_filters(query, model, **filters)
 
@@ -227,30 +277,30 @@ def _get_collection(model, insecure=False, limit=None, marker=None,
     return query.all()
 
 
-def _get_db_object_by_name(model, name, filter_=None, order_by=None):
+def _get_db_object_by_name(model, name, columns=()):
+    query = _secure_query(model, *columns)
 
-    query = _secure_query(model)
-    final_filter = model.name == name
-
-    if filter_ is not None:
-        final_filter = sa.and_(final_filter, filter_)
-
-    if order_by is not None:
-        query = query.order_by(order_by)
-
-    return query.filter(final_filter).first()
+    return query.filter_by(name=name).first()
 
 
-def _get_db_object_by_id(model, id, insecure=False):
-    query = b.model_query(model) if insecure else _secure_query(model)
+def _get_db_object_by_id(model, id, insecure=False, columns=()):
+    query = (
+        b.model_query(model, columns=columns)
+        if insecure
+        else _secure_query(model, *columns)
+    )
 
     return query.filter_by(id=id).first()
 
 
 def _get_db_object_by_name_and_namespace_or_id(model, identifier,
-                                               namespace=None, insecure=False):
-
-    query = b.model_query(model) if insecure else _secure_query(model)
+                                               namespace=None, insecure=False,
+                                               columns=()):
+    query = (
+        b.model_query(model, columns=columns)
+        if insecure
+        else _secure_query(model, *columns)
+    )
 
     match_name = model.name == identifier
 
@@ -258,6 +308,7 @@ def _get_db_object_by_name_and_namespace_or_id(model, identifier,
         match_name = sa.and_(match_name, model.namespace == namespace)
 
     match_id = model.id == identifier
+
     query = query.filter(
         sa.or_(
             match_id,
@@ -268,85 +319,11 @@ def _get_db_object_by_name_and_namespace_or_id(model, identifier,
     return query.first()
 
 
-@compiles(Insert)
-def append_string(insert, compiler, **kw):
-    s = compiler.visit_insert(insert, **kw)
-
-    if 'append_string' in insert.kwargs:
-        append = insert.kwargs['append_string']
-
-        if append:
-            s += " " + append
-
-    if 'replace_string' in insert.kwargs:
-        replace = insert.kwargs['replace_string']
-
-        if isinstance(replace, tuple):
-            s = s.replace(replace[0], replace[1])
-
-    return s
-
-
-@b.session_aware()
-def insert_or_ignore(model_cls, values, session=None):
-    """Insert a new object into DB or ignore if it already exists.
-
-    This method is based on ability of MySQL, PostgreSQL and SQLite
-    to check unique constraint violations and allow user to take a
-    conflict mitigation action. Hence, uniqueness of the object that's
-    being inserted should be considered only from this perspective.
-
-    Note: This method hasn't been tested on databases other than MySQL,
-    PostgreSQL 9.5 or later, and SQLite. Therefore there's no guarantee
-    that it will work with them.
-
-    :param model_cls: Model class.
-    :param values: Values of the new object.
-    """
-
-    model = model_cls()
-
-    model.update(values)
-
-    append = None
-    replace = None
-
-    dialect = b.get_dialect_name()
-
-    if dialect == 'sqlite':
-        replace = ('INSERT INTO', 'INSERT OR IGNORE INTO')
-    elif dialect == 'mysql':
-        append = 'ON DUPLICATE KEY UPDATE id=id'
-    elif dialect == 'postgres':
-        append = 'ON CONFLICT DO NOTHING'
-    else:
-        raise RuntimeError(
-            '"Insert or ignore" is supported only for dialects: sqlite,'
-            ' mysql and postgres. Actual dialect: %s' % dialect
-        )
-
-    insert = model.__table__.insert(
-        append_string=append,
-        replace_string=replace
-    )
-
-    # NOTE(rakhmerov): As it turned out the result proxy object
-    # returned by insert expression does not provide a valid
-    # count of updated rows in for all supported databases.
-    # For this reason we shouldn't return anything from this
-    # method. In order to check whether a new object was really
-    # inserted users should rely on different approaches. The
-    # simplest is just to insert an object with an explicitly
-    # set id and then check if object with such id exists in DB.
-    # Generated id must be unique to make it work.
-    session.execute(insert, model.to_dict())
-
-
 # Workbook definitions.
 
 @b.session_aware()
-def get_workbook(name, session=None):
-    wb = _get_db_object_by_name(models.Workbook, name)
+def get_workbook(name, fields=(), session=None):
+    wb = _get_db_object_by_name(models.Workbook, name, columns=fields)
 
     if not wb:
         raise exc.DBEntityNotFoundError(
@@ -357,8 +334,8 @@ def get_workbook(name, session=None):
 
 
 @b.session_aware()
-def load_workbook(name, session=None):
-    return _get_db_object_by_name(models.Workbook, name)
+def load_workbook(name, fields=(), session=None):
+    return _get_db_object_by_name(models.Workbook, name, columns=fields)
 
 
 @b.session_aware()
@@ -374,9 +351,10 @@ def create_workbook(values, session=None):
 
     try:
         wb.save(session=session)
-    except db_exc.DBDuplicateEntry as e:
+    except db_exc.DBDuplicateEntry:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for WorkbookDefinition: %s" % e.columns
+            "Duplicate entry for WorkbookDefinition ['name', 'project_id']: "
+            "{}, {}".format(wb.name, wb.project_id)
         )
 
     return wb
@@ -418,12 +396,14 @@ def delete_workbooks(session=None, **kwargs):
 # Workflow definitions.
 
 @b.session_aware()
-def get_workflow_definition(identifier, namespace='', session=None):
+def get_workflow_definition(identifier, namespace='', fields=(), session=None):
     """Gets workflow definition by name or uuid.
 
     :param identifier: Identifier could be in the format of plain string or
                        uuid.
     :param namespace: The namespace the workflow is in. Optional.
+    :param fields: Fields that need to be loaded. For example,
+        (WorkflowDefinition.name,)
     :return: Workflow definition.
     """
     ctx = context.ctx()
@@ -432,7 +412,8 @@ def get_workflow_definition(identifier, namespace='', session=None):
         models.WorkflowDefinition,
         identifier,
         namespace=namespace,
-        insecure=ctx.is_admin
+        insecure=ctx.is_admin,
+        columns=fields
     )
 
     if not wf_def:
@@ -445,8 +426,12 @@ def get_workflow_definition(identifier, namespace='', session=None):
 
 
 @b.session_aware()
-def get_workflow_definition_by_id(id, session=None):
-    wf_def = _get_db_object_by_id(models.WorkflowDefinition, id)
+def get_workflow_definition_by_id(id, fields=(), session=None):
+    wf_def = _get_db_object_by_id(
+        models.WorkflowDefinition,
+        id,
+        columns=fields
+    )
 
     if not wf_def:
         raise exc.DBEntityNotFoundError(
@@ -457,20 +442,22 @@ def get_workflow_definition_by_id(id, session=None):
 
 
 @b.session_aware()
-def load_workflow_definition(name, namespace='', session=None):
+def load_workflow_definition(name, namespace='', fields=(), session=None):
     model = models.WorkflowDefinition
 
-    filter_ = model.namespace.in_([namespace, ''])
+    query = _secure_query(model, *fields)
+
+    filter_ = sa.and_(
+        model.name == name, model.namespace.in_([namespace, ''])
+    )
 
     # Give priority to objects not in the default namespace.
     order_by = model.namespace.desc()
 
-    return _get_db_object_by_name(
-        model,
-        name,
-        filter_,
-        order_by
-    )
+    if order_by is not None:
+        query = query.order_by(order_by)
+
+    return query.filter(filter_).first()
 
 
 @b.session_aware()
@@ -494,11 +481,11 @@ def create_workflow_definition(values, session=None):
 
     try:
         wf_def.save(session=session)
-    except db_exc.DBDuplicateEntry as e:
+    except db_exc.DBDuplicateEntry:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for WorkflowDefinition: %s" % e.columns
-        )
-
+            "Duplicate entry for WorkflowDefinition ['name', 'namespace',"
+            " 'project_id']: {}, {}, {}".format(wf_def.name, wf_def.namespace,
+                                                wf_def.project_id))
     return wf_def
 
 
@@ -516,8 +503,8 @@ def update_workflow_definition(identifier, values, namespace='', session=None):
             if c_t.project_id != wf_def.project_id:
                 raise exc.NotAllowedException(
                     "Can not update scope of workflow that has cron triggers "
-                    "associated in other tenants. [workflow_identifier=%s]" %
-                    identifier
+                    "associated in other tenants. [workflow_identifier=%s, "
+                    "namespace=%s]" % (identifier, namespace)
                 )
 
         # Check event triggers.
@@ -525,12 +512,13 @@ def update_workflow_definition(identifier, values, namespace='', session=None):
             insecure=True,
             workflow_id=wf_def.id
         )
+
         for e_t in event_triggers:
             if e_t.project_id != wf_def.project_id:
                 raise exc.NotAllowedException(
                     "Can not update scope of workflow that has event triggers "
-                    "associated in other tenants. [workflow_identifier=%s]" %
-                    identifier
+                    "associated in other tenants. [workflow_identifier=%s, "
+                    "namespace=%s]" % (identifier, namespace)
                 )
 
     wf_def.update(values.copy())
@@ -556,8 +544,12 @@ def delete_workflow_definition(identifier, namespace='', session=None):
     if cron_triggers:
         raise exc.DBError(
             "Can't delete workflow that has cron triggers associated. "
-            "[workflow_identifier=%s], [cron_trigger_id(s)=%s]" %
-            (identifier, ', '.join([t.id for t in cron_triggers]))
+            "[workflow_identifier=%s, namespace=%s], [cron_trigger_id(s)=%s]"
+            % (
+                identifier,
+                namespace,
+                ', '.join([t.id for t in cron_triggers])
+            )
         )
 
     event_triggers = get_event_triggers(insecure=True, workflow_id=wf_def.id)
@@ -583,8 +575,12 @@ def delete_workflow_definitions(session=None, **kwargs):
 # Action definitions.
 
 @b.session_aware()
-def get_action_definition_by_id(id, session=None):
-    action_def = _get_db_object_by_id(models.ActionDefinition, id)
+def get_action_definition_by_id(id, fields=(), session=None):
+    action_def = _get_db_object_by_id(
+        models.ActionDefinition,
+        id,
+        columns=fields
+    )
 
     if not action_def:
         raise exc.DBEntityNotFoundError(
@@ -595,10 +591,11 @@ def get_action_definition_by_id(id, session=None):
 
 
 @b.session_aware()
-def get_action_definition(identifier, session=None):
+def get_action_definition(identifier, fields=(), session=None):
     a_def = _get_db_object_by_name_and_namespace_or_id(
         models.ActionDefinition,
-        identifier
+        identifier,
+        columns=fields
     )
 
     if not a_def:
@@ -610,8 +607,12 @@ def get_action_definition(identifier, session=None):
 
 
 @b.session_aware()
-def load_action_definition(name, session=None):
-    return _get_db_object_by_name(models.ActionDefinition, name)
+def load_action_definition(name, fields=(), session=None):
+    return _get_db_object_by_name(
+        models.ActionDefinition,
+        name,
+        columns=fields
+    )
 
 
 @b.session_aware()
@@ -627,9 +628,10 @@ def create_action_definition(values, session=None):
 
     try:
         a_def.save(session=session)
-    except db_exc.DBDuplicateEntry as e:
+    except db_exc.DBDuplicateEntry:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for action %s: %s" % (a_def.name, e.columns)
+            "Duplicate entry for Action ['name', 'project_id']:"
+            " {}, {}".format(a_def.name, a_def.project_id)
         )
 
     return a_def
@@ -667,8 +669,9 @@ def delete_action_definitions(session=None, **kwargs):
 # Action executions.
 
 @b.session_aware()
-def get_action_execution(id, session=None):
-    a_ex = _get_db_object_by_id(models.ActionExecution, id)
+def get_action_execution(id, insecure=False, fields=(), session=None):
+    a_ex = _get_db_object_by_id(models.ActionExecution, id, insecure=insecure,
+                                columns=fields)
 
     if not a_ex:
         raise exc.DBEntityNotFoundError(
@@ -679,8 +682,8 @@ def get_action_execution(id, session=None):
 
 
 @b.session_aware()
-def load_action_execution(id, session=None):
-    return _get_db_object_by_id(models.ActionExecution, id)
+def load_action_execution(id, fields=(), session=None):
+    return _get_db_object_by_id(models.ActionExecution, id, columns=fields)
 
 
 @b.session_aware()
@@ -698,15 +701,15 @@ def create_action_execution(values, session=None):
         a_ex.save(session=session)
     except db_exc.DBDuplicateEntry as e:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for ActionExecution: %s" % e.columns
+            "Duplicate entry for ActionExecution ID: {}".format(e.value)
         )
 
     return a_ex
 
 
 @b.session_aware()
-def update_action_execution(id, values, session=None):
-    a_ex = get_action_execution(id)
+def update_action_execution(id, values, insecure=False, session=None):
+    a_ex = get_action_execution(id, insecure)
 
     a_ex.update(values.copy())
 
@@ -744,13 +747,14 @@ def _get_action_executions(**kwargs):
 # Workflow executions.
 
 @b.session_aware()
-def get_workflow_execution(id, session=None):
+def get_workflow_execution(id, fields=(), session=None):
     ctx = context.ctx()
 
     wf_ex = _get_db_object_by_id(
         models.WorkflowExecution,
         id,
-        insecure=ctx.is_admin
+        insecure=ctx.is_admin,
+        columns=fields
     )
 
     if not wf_ex:
@@ -762,8 +766,8 @@ def get_workflow_execution(id, session=None):
 
 
 @b.session_aware()
-def load_workflow_execution(id, session=None):
-    return _get_db_object_by_id(models.WorkflowExecution, id)
+def load_workflow_execution(id, fields=(), session=None):
+    return _get_db_object_by_id(models.WorkflowExecution, id, columns=fields)
 
 
 @b.session_aware()
@@ -781,7 +785,9 @@ def create_workflow_execution(values, session=None):
         wf_ex.save(session=session)
     except db_exc.DBDuplicateEntry as e:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for WorkflowExecution: %s" % e.columns
+            "Duplicate entry for WorkflowExecution with ID: {value} ".format(
+                value=e.value
+            )
         )
 
     return wf_ex
@@ -826,39 +832,17 @@ def delete_workflow_executions(session=None, **kwargs):
     return _delete_all(models.WorkflowExecution, **kwargs)
 
 
-@b.session_aware()
-def update_workflow_execution_state(id, cur_state, state, session=None):
-    wf_ex = None
+def update_workflow_execution_state(id, cur_state, state):
+    specimen = models.WorkflowExecution(id=id, state=cur_state)
 
-    # Use WHERE clause to exclude possible conflicts if the state has
-    # already been changed.
-    try:
-        specimen = models.WorkflowExecution(
-            id=id,
-            state=cur_state
-        )
-
-        wf_ex = b.model_query(
-            models.WorkflowExecution).update_on_match(
-            specimen=specimen,
-            surrogate_key='id',
-            values={'state': state}
-        )
-    except oslo_sqlalchemy.update_match.NoRowsMatched:
-        LOG.info(
-            "Can't change workflow execution state from %s to %s, "
-            "because it has already been changed. [execution_id=%s]",
-            cur_state, state, id
-        )
-
-    return wf_ex
+    return update_on_match(id, specimen, values={'state': state}, attempts=1)
 
 
 # Tasks executions.
 
 @b.session_aware()
-def get_task_execution(id, session=None):
-    task_ex = _get_db_object_by_id(models.TaskExecution, id)
+def get_task_execution(id, fields=(), session=None):
+    task_ex = _get_db_object_by_id(models.TaskExecution, id, columns=fields)
 
     if not task_ex:
         raise exc.DBEntityNotFoundError(
@@ -869,8 +853,8 @@ def get_task_execution(id, session=None):
 
 
 @b.session_aware()
-def load_task_execution(id, session=None):
-    return _get_db_object_by_id(models.TaskExecution, id)
+def load_task_execution(id, fields=(), session=None):
+    return _get_db_object_by_id(models.TaskExecution, id, columns=fields)
 
 
 @b.session_aware()
@@ -899,6 +883,30 @@ def get_completed_task_executions(session=None, **kwargs):
     query = _get_completed_task_executions_query(kwargs)
 
     return query.all()
+
+
+@b.session_aware()
+def get_completed_task_executions_as_batches(session=None, **kwargs):
+    # NOTE: Using batch querying seriously allows to optimize memory
+    # consumption on operations when we need to iterate through
+    # a list of task executions and do some processing like merging
+    # their inbound contexts. If we don't use batches Mistral has to
+    # hold all the collection (that can be large) in memory.
+    # Using a generator that returns batches lets GC to collect a
+    # batch of task executions that has already been processed.
+    query = _get_completed_task_executions_query(kwargs)
+
+    # Batch size 20 may be arguable but still seems reasonable: it's big
+    # enough to keep the total number of DB hops small (say for 100 tasks
+    # we'll need only 5) and small enough not to drastically increase
+    # memory footprint if the number of tasks is big like several hundreds.
+    batch_size = 20
+    idx = 0
+
+    while idx < query.count():
+        yield query.slice(idx, idx + batch_size).all()
+
+        idx += batch_size
 
 
 def _get_incomplete_task_executions_query(kwargs):
@@ -943,7 +951,7 @@ def create_task_execution(values, session=None):
         task_ex.save(session=session)
     except db_exc.DBDuplicateEntry as e:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for TaskExecution: %s" % e.columns
+            "Duplicate entry for TaskExecution ID: {}".format(e.value)
         )
 
     return task_ex
@@ -982,32 +990,10 @@ def delete_task_executions(session=None, **kwargs):
     return _delete_all(models.TaskExecution, **kwargs)
 
 
-@b.session_aware()
-def update_task_execution_state(id, cur_state, state, session=None):
-    wf_ex = None
+def update_task_execution_state(id, cur_state, state):
+    specimen = models.TaskExecution(id=id, state=cur_state)
 
-    # Use WHERE clause to exclude possible conflicts if the state has
-    # already been changed.
-    try:
-        specimen = models.TaskExecution(
-            id=id,
-            state=cur_state
-        )
-
-        wf_ex = b.model_query(
-            models.TaskExecution).update_on_match(
-            specimen=specimen,
-            surrogate_key='id',
-            values={'state': state}
-        )
-    except oslo_sqlalchemy.update_match.NoRowsMatched:
-        LOG.info(
-            "Can't change task execution state from %s to %s, "
-            "because it has already been changed. [execution_id=%s]",
-            cur_state, state, id
-        )
-
-    return wf_ex
+    return update_on_match(id, specimen, values={'state': state}, attempts=1)
 
 
 # Delayed calls.
@@ -1021,7 +1007,7 @@ def create_delayed_call(values, session=None):
         delayed_call.save(session)
     except db_exc.DBDuplicateEntry as e:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for DelayedCall: %s" % e.columns
+            "Duplicate entry for DelayedCall ID: {}".format(e.value)
         )
 
     return delayed_call
@@ -1041,12 +1027,13 @@ def delete_delayed_call(id, session=None):
 
 
 @b.session_aware()
-def get_delayed_calls_to_start(time, session=None):
+def get_delayed_calls_to_start(time, batch_size=None, session=None):
     query = b.model_query(models.DelayedCall)
 
     query = query.filter(models.DelayedCall.execution_time < time)
     query = query.filter_by(processing=False)
     query = query.order_by(models.DelayedCall.execution_time)
+    query = query.limit(batch_size)
 
     return query.all()
 
@@ -1113,6 +1100,18 @@ def get_expired_executions(expiration_time, limit=None, columns=(),
 
 
 @b.session_aware()
+def get_running_expired_sync_actions(expiration_time, session=None):
+    query = b.model_query(models.ActionExecution)
+    query = query.filter(
+        models.ActionExecution.last_heartbeat < expiration_time
+    )
+    query = query.filter_by(is_sync=True)
+    query = query.filter(models.ActionExecution.state == states.RUNNING)
+
+    return query.all()
+
+
+@b.session_aware()
 def get_superfluous_executions(max_finished_executions, limit=None, columns=(),
                                session=None):
     if not max_finished_executions:
@@ -1130,9 +1129,12 @@ def get_superfluous_executions(max_finished_executions, limit=None, columns=(),
 
 def _get_completed_root_executions_query(columns):
     query = b.model_query(models.WorkflowExecution, columns=columns)
+
     # Only WorkflowExecution that are not a child of other WorkflowExecution.
-    query = query.filter(models.WorkflowExecution.
-                         task_execution_id == sa.null())
+    query = query.filter(
+        models.WorkflowExecution.task_execution_id == sa.null()
+    )
+
     query = query.filter(
         models.WorkflowExecution.state.in_(
             [states.SUCCESS,
@@ -1140,6 +1142,7 @@ def _get_completed_root_executions_query(columns):
              states.CANCELLED]
         )
     )
+
     return query
 
 
@@ -1205,10 +1208,10 @@ def create_cron_trigger(values, session=None):
 
     try:
         cron_trigger.save(session=session)
-    except db_exc.DBDuplicateEntry as e:
+    except db_exc.DBDuplicateEntry:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for cron trigger %s: %s"
-            % (cron_trigger.name, e.columns)
+            "Duplicate entry for cron trigger ['name', 'project_id']: "
+            "{}, {}".format(cron_trigger.name, cron_trigger.project_id)
         )
     # TODO(nmakhotkin): Remove this 'except' after fixing
     # https://bugs.launchpad.net/oslo.db/+bug/1458583.
@@ -1318,9 +1321,10 @@ def create_environment(values, session=None):
 
     try:
         env.save(session=session)
-    except db_exc.DBDuplicateEntry as e:
+    except db_exc.DBDuplicateEntry:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for Environment: %s" % e.columns
+            "Duplicate entry for Environment ['name', 'project_id']:"
+            " {}, {}".format(env.name, env.project_id)
         )
 
     return env
@@ -1406,9 +1410,13 @@ def create_resource_member(values, session=None):
 
     try:
         res_member.save(session=session)
-    except db_exc.DBDuplicateEntry as e:
+    except db_exc.DBDuplicateEntry:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for ResourceMember: %s" % e.columns
+            "Duplicate entry for ResourceMember ['resource_id',"
+            " 'resource_type', 'member_id']: {}, {}, "
+            "{}".format(res_member.resource_id,
+                        res_member.resource_type,
+                        res_member.member_id)
         )
 
     return res_member
@@ -1551,11 +1559,15 @@ def create_event_trigger(values, session=None):
 
     try:
         event_trigger.save(session=session)
-    except db_exc.DBDuplicateEntry as e:
+    except db_exc.DBDuplicateEntry:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for event trigger %s: %s"
-            % (event_trigger.id, e.columns)
-        )
+            "Duplicate entry for EventTrigger ['exchange', 'topic',"
+            " 'event', 'workflow_id', 'project_id']:"
+            " {}, {}, {}, {}, {}".format(event_trigger.exchange,
+                                         event_trigger.topic,
+                                         event_trigger.event,
+                                         event_trigger.workflow_id,
+                                         event_trigger.project_id))
     # TODO(nmakhotkin): Remove this 'except' after fixing
     # https://bugs.launchpad.net/oslo.db/+bug/1458583.
     except db_exc.DBError as e:

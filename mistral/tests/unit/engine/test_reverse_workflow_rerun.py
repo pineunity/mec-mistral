@@ -88,7 +88,7 @@ class ReverseWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(SIMPLE_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {}, task_name='t3')
+        wf_ex = self.engine.start_workflow('wb1.wf1', task_name='t3')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -200,8 +200,6 @@ class ReverseWorkflowRerunTest(base.EngineTestCase):
         # Run workflow and fail task.
         wf_ex = self.engine.start_workflow(
             'wb1.wf1',
-            '',
-            {},
             task_name='t3',
             env=env
         )
@@ -217,7 +215,6 @@ class ReverseWorkflowRerunTest(base.EngineTestCase):
         self.assertIsNotNone(wf_ex.state_info)
         self.assertEqual(2, len(task_execs))
         self.assertDictEqual(env, wf_ex.params['env'])
-        self.assertDictEqual(env, wf_ex.context['__env'])
 
         task_1_ex = self._assert_single_item(task_execs, name='t1')
         task_2_ex = self._assert_single_item(task_execs, name='t2')
@@ -240,7 +237,6 @@ class ReverseWorkflowRerunTest(base.EngineTestCase):
         self.assertEqual(states.RUNNING, wf_ex.state)
         self.assertIsNone(wf_ex.state_info)
         self.assertDictEqual(updated_env, wf_ex.params['env'])
-        self.assertDictEqual(updated_env, wf_ex.context['__env'])
 
         # Wait for the workflow to succeed.
         self.await_workflow_success(wf_ex.id)
@@ -341,7 +337,7 @@ class ReverseWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(SIMPLE_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {}, task_name='t3')
+        wf_ex = self.engine.start_workflow('wb1.wf1', task_name='t3')
 
         self.await_workflow_error(wf_ex.id)
 

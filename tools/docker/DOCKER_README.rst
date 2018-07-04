@@ -1,89 +1,127 @@
-Using Mistral with docker
+Using Mistral with Docker
 =========================
 
-In order to minimize the work needed to run the current Mistral code, or
-be able to spin up independent or networked Mistral instances in seconds,
-Docker containers are a very good option. This guide describes the process
+Docker containers provide an easy way to quickly deploy independent or
+networked Mistral instances in seconds. This guide describes the process
 to launch an all-in-one Mistral container.
 
 
-Docker installation
+Docker Installation
 -------------------
 
-In order to install the latest docker engine, run::
+The following links contain instructions to install latest Docker software:
 
-  curl -fsSL https://get.docker.com/ | sh
-
-If you are behind a proxy, additional configuration may be needed to be
-able to execute further steps in the setup process. For detailed information
-on this process, check out `the official guide at
-<http://www.sqlite.org/omitted.html>`_.
+* `Docker Engine <https://docs.docker.com/engine/installation/>`_
+* `Docker Compose <https://docs.docker.com/compose/install/>`_
 
 
-Build the Mistral image
------------------------
+Build the Mistral Image Manually
+--------------------------------
 
-The `build.sh` script takes care of creating the `mistral-all` image locally.
-This is image is configured to use  RabbitMQ for transport and MySQL as database
-backend. It is possible to run Mistral with Sqlite as database backend but
-it is very unreliable, thus, MySQL was selected as the default database backend
-for this image.
+Execute the following command from the repository top-level directory::
 
+  docker build -t mistral -f tools/docker/Dockerfile .
 
-Running Mistral with MySQL
---------------------------
+The Mistral Docker image has one build parameter:
 
-The `start_mistral_rabbit_mysql.sh` script sets up a rabbitmq container, a
-mysql container and a mistral container to work together.
-
-The script can be invoked with::
-
-  start_mistral_rabbit_mysql.sh [single|multi]
-
-`single` mode (this is the default) will create
-
- - rabbitmq container,
- - the mysql container,
- - and the mistral container that runs all Mistral services.
++-------------------------+-------------+--------------------------------------+
+|Name                     |Default value| Description                          |
++=========================+=============+======================================+
+|`BUILD_TEST_DEPENDENCIES`|false        |If the `BUILD_TEST_DEPENDENCIES`      |
+|                         |             |equals `true`, the Mistral test       |
+|                         |             |dependencies will be installed inside |
+|                         |             |the Docker image                      |
++-------------------------+-------------+----------------------+---------------+
 
 
-`multi` mode will create
+Running Mistral using Docker Compose
+------------------------------------
 
- - rabbitmq,
- - mysql,
- - mistral-api,
- - one mistral-engine,
- - two mistral-executors
+To launch Mistral in the single node configuration::
 
-Check out the script for more detail and examples for different setup options.
+  docker-compose -f tools/docker/docker-compose/infrastructure.yaml \
+               -f tools/docker/docker-compose/mistral-single-node.yaml \
+               -p mistral up -d
 
-Using Mistral
--------------
+To launch Mistral in the multi node configuration::
 
-Depending on the mode, you may need to use the `mistral` or the `mistral-api`
-container.
+  docker-compose -f tools/docker/docker-compose/infrastructure.yaml \
+               -f tools/docker/docker-compose/mistral-multi-node.yaml \
+               -p mistral up -d
 
-With the `multi` option execute commands inside the container::
+The infrastructure docker-compose file contains examples of RabbitMQ,
+PostgreSQL and MySQL configurations. Feel free to modify the docker-compose
+files as needed.
 
-  docker exec -it mistral-api bash
+The docker-compose Mistral configurations also include the CloudFlow container.
+It is available at `link <http://localhost:8000/>`_
 
-E.g. to list workflows, issue::
+The `--build` option can be used when it is necessary to rebuild the image,
+for example::
 
-  mistral workflow-list
-
-The script also configures the containers so that the Mistral API will be
-accessible from the host machine on the default port 8989. So it is also
-possible to install the `mistral-pythonclient` to the host machine and
-execute commands there.
+  docker-compose -f tools/docker/docker-compose/infrastructure.yaml \
+               -f tools/docker/docker-compose/mistral-single-node.yaml \
+               -p mistral up -d --build
 
 Configuring Mistral
 -------------------
 
-The Mistral configuration is stored in the Docker image. The changes to the
-configuration should be synchronized between all deployed containers to
-ensure consistent behavior. This can be achieved by mounting the configuration
-as a volume::
+The Docker image contains the minimal set of Mistral configuration parameters
+by default:
 
-  export EXTRA_OPTS='-v <path to local mistral.conf>:/etc/mistral/mistral.conf:ro'
-  start_mistral_rabbit_mysql.sh multi
++--------------------+------------------+--------------------------------------+
+|Name                |Default value     | Description                          |
++====================+==================+======================================+
+|`MESSAGE_BROKER_URL`|rabbit://guest:gu\|The message broker URL                |
+|                    |est@rabbitmq:5672 |                                      |
++--------------------+------------------+----------------------+---------------+
+|`DATABASE_URL`      |sqlite:///mistral\|The database URL                      |
+|                    |.db               |                                      |
++--------------------+------------------+----------------------+---------------+
+|`UPGRADE_DB`        |false             |If the `UPGRADE_DB` equals `true`,    |
+|                    |                  |a database upgrade will be launched   |
+|                    |                  |before Mistral main process           |
++--------------------+------------------+----------------------+---------------+
+|`MISTRAL_SERVER`    |all               |Specifies which mistral server to     |
+|                    |                  |start by the launch script.           |
++--------------------+------------------+----------------------+---------------+
+|`LOG_DEBUG`         |false             |If set to true, the logging level will|
+|                    |                  |be set to DEBUG instead of the default|
+|                    |                  |INFO level.                           |
++--------------------+------------------+----------------------+---------------+
+|`RUN_TESTS`         |false             |If the `UPGRADE_DB` equals `true`,    |
+|                    |                  |the Mistral unit tests will be        |
+|                    |                  |launched inside container             |
++--------------------+------------------+----------------------+---------------+
+
+The `/etc/mistral/mistral.conf` configuration file can be mounted to the Mistral
+Docker container by uncommenting and editing the `volumes` sections in the Mistral
+docker-compose files.
+
+
+Launch tests inside Container
+-----------------------------
+
+Build mistral::
+
+  docker build -t mistral -f tools/docker/Dockerfile \
+        --build-arg BUILD_TEST_DEPENDENCIES=true .
+
+Run tests using SQLite::
+
+  docker run -it -e RUN_TESTS=true mistral
+
+or PostgreSQL::
+
+  docker run -it \
+    -e DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres \
+    -e RUN_TESTS=true mistral
+
+
+Using Mistral Client
+--------------------
+
+The Mistral API will be accessible from the host machine on the default
+port 8989. Install `python-mistralclient` on the host machine to
+execute mistral commands.
 

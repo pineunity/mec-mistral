@@ -20,11 +20,20 @@ from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from stevedore import extension
 import yaml
+from yaml import representer
 import yaql
+
+from yaql.language import utils as yaql_utils
 
 from mistral.db.v2 import api as db_api
 from mistral import utils
 
+# TODO(rakhmerov): it's work around the bug in YAQL.
+# YAQL shouldn't expose internal types to custom functions.
+representer.SafeRepresenter.add_representer(
+    yaql_utils.FrozenDict,
+    representer.SafeRepresenter.represent_dict
+)
 
 LOG = logging.getLogger(__name__)
 ROOT_YAQL_CONTEXT = None
@@ -39,7 +48,7 @@ def get_yaql_context(data_context):
         _register_yaql_functions(ROOT_YAQL_CONTEXT)
 
     new_ctx = ROOT_YAQL_CONTEXT.create_child_context()
-    new_ctx['$'] = data_context
+    new_ctx['$'] = yaql_utils.convert_input_data(data_context)
 
     if isinstance(data_context, dict):
         new_ctx['__env'] = data_context.get('__env')
@@ -102,6 +111,59 @@ def _register_jinja_functions(jinja_ctx):
 
 def env_(context):
     return context['__env']
+
+
+def executions_(context,
+                id=None,
+                root_execution_id=None,
+                state=None,
+                from_time=None,
+                to_time=None
+                ):
+
+    filter = {}
+
+    if id is not None:
+        filter = utils.filter_utils.create_or_update_filter(
+            'id',
+            id,
+            "eq",
+            filter
+        )
+
+    if root_execution_id is not None:
+        filter = utils.filter_utils.create_or_update_filter(
+            'root_execution_id',
+            root_execution_id,
+            "eq",
+            filter
+        )
+
+    if state is not None:
+        filter = utils.filter_utils.create_or_update_filter(
+            'state',
+            state,
+            "eq",
+            filter
+        )
+
+    if from_time is not None:
+        filter = utils.filter_utils.create_or_update_filter(
+            'created_at',
+            from_time,
+            "gte",
+            filter
+        )
+
+    if to_time is not None:
+        filter = utils.filter_utils.create_or_update_filter(
+            'created_at',
+            to_time,
+            "lt",
+            filter
+        )
+
+    return db_api.get_workflow_executions(**filter)
 
 
 def execution_(context):
@@ -251,7 +313,6 @@ def _get_tasks_from_db(workflow_execution_id=None, recursive=False, state=None,
 
 def tasks_(context, workflow_execution_id=None, recursive=False, state=None,
            flat=False):
-
     task_execs = _get_tasks_from_db(
         workflow_execution_id,
         recursive,

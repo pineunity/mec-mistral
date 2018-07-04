@@ -1,4 +1,5 @@
 # Copyright 2013 - Mirantis, Inc.
+# Copyright 2018 - Extreme Networks, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -17,12 +18,25 @@ from wsme import types as wtypes
 
 from mistral.api.controllers import resource
 from mistral.api.controllers.v2 import types
+from mistral import exceptions as exc
+from mistral import utils
 from mistral.workflow import states
 
 SCOPE_TYPES = wtypes.Enum(str, 'private', 'public')
 
 
-class Workbook(resource.Resource):
+class ScopedResource(object):
+    """Utilities for scoped resources"""
+    @classmethod
+    def validate_scope(cls, scope):
+        if scope not in SCOPE_TYPES.values:
+            raise exc.InvalidModelException(
+                "Scope must be one of the following: %s; actual: "
+                "%s" % (SCOPE_TYPES.values, scope)
+            )
+
+
+class Workbook(resource.Resource, ScopedResource):
     """Workbook resource."""
 
     id = wtypes.text
@@ -66,7 +80,7 @@ class Workbooks(resource.ResourceList):
         return cls(workbooks=[Workbook.sample()])
 
 
-class Workflow(resource.Resource):
+class Workflow(resource.Resource, ScopedResource):
     """Workflow resource."""
 
     id = wtypes.text
@@ -128,6 +142,22 @@ class Workflow(resource.Resource):
 
         return cls._set_input(obj, db_model.spec)
 
+    @classmethod
+    def from_tuples(cls, tuple_iterator):
+        obj = cls()
+        spec = None
+        for col_name, col_val in tuple_iterator:
+            if hasattr(obj, col_name):
+                # Convert all datetime values to strings.
+                setattr(obj, col_name, utils.datetime_to_str(col_val))
+            if col_name == 'spec':
+                spec = col_val
+
+        if spec:
+            obj = cls._set_input(obj, spec)
+
+        return obj
+
 
 class Workflows(resource.ResourceList):
     """A collection of workflows."""
@@ -151,7 +181,7 @@ class Workflows(resource.ResourceList):
         return workflows_sample
 
 
-class Action(resource.Resource):
+class Action(resource.Resource, ScopedResource):
     """Action resource.
 
     NOTE: *name* is immutable. Note that name and description get inferred
@@ -215,34 +245,55 @@ class Execution(resource.Resource):
     """Execution resource."""
 
     id = wtypes.text
-    "id is immutable and auto assigned."
+    "execution ID. It is immutable and auto assigned or determined by the API "
+    "client on execution creation. "
+    "If it's passed to POST method from a client it'll be assigned to the "
+    "newly created execution object, but only if an execution with such ID "
+    "doesn't exist. If it exists, then the endpoint will just return "
+    "execution properties in JSON."
+
+    workflow_id = wtypes.text
+    "workflow ID"
 
     workflow_name = wtypes.text
-    "reference to workflow definition"
+    "workflow name"
 
     workflow_namespace = wtypes.text
-    """reference to workflow namespace. The workflow namespace is also saved
+    """Workflow namespace. The workflow namespace is also saved
      under params and passed to all sub-workflow executions. When looking for
      the next sub-workflow to run, The correct workflow will be found by
      name and namespace, where the namespace can be the workflow namespace or
      the default namespace. Workflows in the same namespace as the top workflow
      will be given a higher priority."""
 
-    workflow_id = wtypes.text
-    "reference to workflow ID"
-
     description = wtypes.text
-    "description of workflow execution."
+    "description of workflow execution"
 
     params = types.jsontype
-    """params define workflow type specific parameters. For example, reverse
-     workflow takes one parameter 'task_name' that defines a target task."""
+    """'params' define workflow type specific parameters. Specific parameters
+     are:
+     'task_name' - the name of the target task. Only for reverse workflows.
+     'env' - A string value containing the name of the stored environment
+     object or a dictionary with the environment variables used during
+     workflow execution and accessible as 'env()' from within expressions
+     (YAQL or Jinja) defined in the workflow text.
+     'evaluate_env' - If present, controls whether or not Mistral should
+     recursively find and evaluate all expressions (YAQL or Jinja) within
+     the specified environment (via 'env' parameter). 'True' - evaluate
+     all expressions recursively in the environment structure. 'False' -
+     don't evaluate expressions. 'True' by default.
+    """
 
     task_execution_id = wtypes.text
     "reference to the parent task execution"
 
     root_execution_id = wtypes.text
     "reference to the root execution"
+
+    source_execution_id = wtypes.text
+    """reference to a workflow execution id which will signal the api to
+    perform a lookup of a current workflow_execution and create a replica
+    based on that workflow inputs and parameters"""
 
     state = wtypes.text
     "state can be one of: IDLE, RUNNING, SUCCESS, ERROR, PAUSED"
@@ -251,10 +302,10 @@ class Execution(resource.Resource):
     "an optional state information string"
 
     input = types.jsontype
-    "input is a JSON structure containing workflow input values."
+    "input is a JSON structure containing workflow input values"
 
     output = types.jsontype
-    "output is a workflow output."
+    "output is a workflow output"
 
     created_at = wtypes.text
     updated_at = wtypes.text
@@ -263,18 +314,39 @@ class Execution(resource.Resource):
 
     @classmethod
     def sample(cls):
-        return cls(id='123e4567-e89b-12d3-a456-426655440000',
-                   workflow_name='flow',
-                   workflow_namespace='some_namespace',
-                   workflow_id='123e4567-e89b-12d3-a456-426655441111',
-                   description='this is the first execution.',
-                   project_id='40a908dbddfe48ad80a87fb30fa70a03',
-                   state='SUCCESS',
-                   input={},
-                   output={},
-                   params={'env': {'k1': 'abc', 'k2': 123}},
-                   created_at='1970-01-01T00:00:00.000000',
-                   updated_at='1970-01-01T00:00:00.000000')
+        return cls(
+            id='123e4567-e89b-12d3-a456-426655440000',
+            workflow_name='flow',
+            workflow_namespace='some_namespace',
+            workflow_id='123e4567-e89b-12d3-a456-426655441111',
+            description='this is the first execution.',
+            project_id='40a908dbddfe48ad80a87fb30fa70a03',
+            state='SUCCESS',
+            input={},
+            output={},
+            params={
+                'env': {'k1': 'abc', 'k2': 123},
+                'notify': [
+                    {
+                        'type': 'webhook',
+                        'url': 'http://endpoint/of/webhook',
+                        'headers': {
+                            'Content-Type': 'application/json',
+                            'X-Auth-Token': '123456789'
+                        }
+                    },
+                    {
+                        'type': 'queue',
+                        'topic': 'failover_queue',
+                        'backend': 'rabbitmq',
+                        'host': '127.0.0.1',
+                        'port': 5432
+                    }
+                ]
+            },
+            created_at='1970-01-01T00:00:00.000000',
+            updated_at='1970-01-01T00:00:00.000000'
+        )
 
 
 class Executions(resource.ResourceList):

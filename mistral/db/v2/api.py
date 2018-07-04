@@ -53,8 +53,8 @@ def end_tx():
 
 
 @contextlib.contextmanager
-def transaction():
-    with IMPL.transaction():
+def transaction(read_only=False):
+    with IMPL.transaction(read_only):
         yield
 
 
@@ -71,13 +71,13 @@ def acquire_lock(model, id):
 
 # Workbooks.
 
-def get_workbook(name):
-    return IMPL.get_workbook(name)
+def get_workbook(name, fields=()):
+    return IMPL.get_workbook(name, fields=fields)
 
 
-def load_workbook(name):
+def load_workbook(name, fields=()):
     """Unlike get_workbook this method is allowed to return None."""
-    return IMPL.load_workbook(name)
+    return IMPL.load_workbook(name, fields=fields)
 
 
 def get_workbooks(limit=None, marker=None, sort_keys=None,
@@ -114,17 +114,21 @@ def delete_workbooks(**kwargs):
 
 # Workflow definitions.
 
-def get_workflow_definition(identifier, namespace=''):
-    return IMPL.get_workflow_definition(identifier, namespace=namespace)
+def get_workflow_definition(identifier, namespace='', fields=()):
+    return IMPL.get_workflow_definition(
+        identifier,
+        namespace=namespace,
+        fields=fields
+    )
 
 
-def get_workflow_definition_by_id(id):
-    return IMPL.get_workflow_definition_by_id(id)
+def get_workflow_definition_by_id(id, fields=()):
+    return IMPL.get_workflow_definition_by_id(id, fields=fields)
 
 
-def load_workflow_definition(name, namespace=''):
+def load_workflow_definition(name, namespace='', fields=()):
     """Unlike get_workflow_definition this method is allowed to return None."""
-    return IMPL.load_workflow_definition(name, namespace)
+    return IMPL.load_workflow_definition(name, namespace, fields=fields)
 
 
 def get_workflow_definitions(limit=None, marker=None, sort_keys=None,
@@ -161,17 +165,17 @@ def delete_workflow_definitions(**kwargs):
 
 # Action definitions.
 
-def get_action_definition_by_id(id):
-    return IMPL.get_action_definition_by_id(id)
+def get_action_definition_by_id(id, fields=()):
+    return IMPL.get_action_definition_by_id(id, fields=fields)
 
 
-def get_action_definition(name):
-    return IMPL.get_action_definition(name)
+def get_action_definition(name, fields=()):
+    return IMPL.get_action_definition(name, fields=fields)
 
 
-def load_action_definition(name):
+def load_action_definition(name, fields=()):
     """Unlike get_action_definition this method is allowed to return None."""
-    return IMPL.load_action_definition(name)
+    return IMPL.load_action_definition(name, fields=fields)
 
 
 def get_action_definitions(limit=None, marker=None, sort_keys=None,
@@ -207,13 +211,13 @@ def delete_action_definitions(**kwargs):
 
 # Action executions.
 
-def get_action_execution(id):
-    return IMPL.get_action_execution(id)
+def get_action_execution(id, fields=(), insecure=False):
+    return IMPL.get_action_execution(id, fields=fields, insecure=insecure)
 
 
-def load_action_execution(name):
+def load_action_execution(name, fields=()):
     """Unlike get_action_execution this method is allowed to return None."""
-    return IMPL.load_action_execution(name)
+    return IMPL.load_action_execution(name, fields=fields)
 
 
 def get_action_executions(**kwargs):
@@ -224,8 +228,8 @@ def create_action_execution(values):
     return IMPL.create_action_execution(values)
 
 
-def update_action_execution(id, values):
-    return IMPL.update_action_execution(id, values)
+def update_action_execution(id, values, insecure=False):
+    return IMPL.update_action_execution(id, values, insecure)
 
 
 def create_or_update_action_execution(id, values):
@@ -242,13 +246,13 @@ def delete_action_executions(**kwargs):
 
 # Workflow executions.
 
-def get_workflow_execution(id):
-    return IMPL.get_workflow_execution(id)
+def get_workflow_execution(id, fields=()):
+    return IMPL.get_workflow_execution(id, fields=fields)
 
 
-def load_workflow_execution(name):
+def load_workflow_execution(name, fields=()):
     """Unlike get_workflow_execution this method is allowed to return None."""
-    return IMPL.load_workflow_execution(name)
+    return IMPL.load_workflow_execution(name, fields=fields)
 
 
 def get_workflow_executions(limit=None, marker=None, sort_keys=None,
@@ -288,13 +292,13 @@ def update_workflow_execution_state(**kwargs):
 
 # Tasks executions.
 
-def get_task_execution(id):
-    return IMPL.get_task_execution(id)
+def get_task_execution(id, fields=()):
+    return IMPL.get_task_execution(id, fields=fields)
 
 
-def load_task_execution(id):
+def load_task_execution(id, fields=()):
     """Unlike get_task_execution this method is allowed to return None."""
-    return IMPL.load_task_execution(id)
+    return IMPL.load_task_execution(id, fields=fields)
 
 
 def get_task_executions(limit=None, marker=None, sort_keys=None,
@@ -310,6 +314,10 @@ def get_task_executions(limit=None, marker=None, sort_keys=None,
 
 def get_completed_task_executions(**kwargs):
     return IMPL.get_completed_task_executions(**kwargs)
+
+
+def get_completed_task_executions_as_batches(**kwargs):
+    return IMPL.get_completed_task_executions_as_batches(**kwargs)
 
 
 def get_incomplete_task_executions(**kwargs):
@@ -346,8 +354,8 @@ def update_task_execution_state(**kwargs):
 
 # Delayed calls.
 
-def get_delayed_calls_to_start(time):
-    return IMPL.get_delayed_calls_to_start(time)
+def get_delayed_calls_to_start(time, batch_size=None):
+    return IMPL.get_delayed_calls_to_start(time, batch_size)
 
 
 def create_delayed_call(values):
@@ -397,8 +405,7 @@ def get_next_cron_triggers(time):
     return IMPL.get_next_cron_triggers(time)
 
 
-def get_expired_executions(expiration_time, limit=None, columns=(),
-                           session=None):
+def get_expired_executions(expiration_time, limit=None, columns=()):
     return IMPL.get_expired_executions(
         expiration_time,
         limit,
@@ -406,8 +413,12 @@ def get_expired_executions(expiration_time, limit=None, columns=(),
     )
 
 
-def get_superfluous_executions(max_finished_executions, limit=None, columns=(),
-                               session=None):
+def get_running_expired_sync_actions(expiration_time, session=None):
+    return IMPL.get_running_expired_sync_actions(expiration_time)
+
+
+def get_superfluous_executions(max_finished_executions, limit=None,
+                               columns=()):
     return IMPL.get_superfluous_executions(
         max_finished_executions,
         limit,

@@ -1,5 +1,6 @@
 # Copyright 2013 - Mirantis, Inc.
 # Copyright 2016 - Brocade Communications Systems, Inc.
+# Copyright 2018 - Extreme Networks, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -89,7 +90,7 @@ api_opts = [
 js_impl_opt = cfg.StrOpt(
     'js_implementation',
     default='pyv8',
-    choices=['pyv8', 'v8eval'],
+    choices=['pyv8', 'v8eval', 'py_mini_racer'],
     help=_('The JavaScript implementation to be used by the std.javascript '
            'action to evaluate scripts.')
 )
@@ -172,6 +173,12 @@ engine_opts = [
                ' will be restored automatically. If this property is'
                ' set to a negative value Mistral will never be doing '
                ' this check.')
+    ),
+    cfg.IntOpt(
+        'action_definition_cache_time',
+        default=60,
+        help=_('A number of seconds that indicates how long action '
+               'definitions should be stored in the local cache.')
     )
 ]
 
@@ -228,6 +235,17 @@ scheduler_opts = [
             'delay limited by this property.'
         )
     ),
+    cfg.IntOpt(
+        'batch_size',
+        default=None,
+        min=1,
+        help=(
+            'The max number of delayed calls will be selected during '
+            'a scheduler iteration. '
+            'If this property equals None then there is no '
+            'restriction on selection.'
+        )
+    )
 ]
 
 cron_trigger_opts = [
@@ -240,6 +258,20 @@ cron_trigger_opts = [
             ' performance.'
         )
     ),
+    cfg.IntOpt(
+        'execution_interval',
+        default=1,
+        min=1,
+        help=(
+            'This setting defines how frequently Mistral checks for cron ',
+            'triggers that need execution. By default this is every second ',
+            'which can lead to high system load. Increasing the number will ',
+            'reduce the load but also limit the minimum freqency. For ',
+            'example, a cron trigger can be configured to run every second ',
+            'but if the execution_interval is set to 60, it will only run ',
+            'once per minute.'
+        )
+    )
 ]
 
 event_engine_opts = [
@@ -269,12 +301,43 @@ event_engine_opts = [
     ),
 ]
 
+notifier_opts = [
+    cfg.StrOpt(
+        'type',
+        choices=['local', 'remote'],
+        default='remote',
+        help=(
+            'Type of notifier. Use local to run the notifier within the '
+            'engine server. Use remote if the notifier is launched as '
+            'a separate server to process events.'
+        )
+    ),
+    cfg.StrOpt(
+        'host',
+        default='0.0.0.0',
+        help=_('Name of the notifier node. This can be an opaque '
+               'identifier. It is not necessarily a hostname, '
+               'FQDN, or IP address.')
+    ),
+    cfg.StrOpt(
+        'topic',
+        default='mistral_notifier',
+        help=_('The message topic that the notifier server listens on.')
+    ),
+    cfg.ListOpt(
+        'notify',
+        item_type=eval,
+        bounds=True,
+        help=_('List of publishers to publish notification.')
+    )
+]
+
 execution_expiration_policy_opts = [
     cfg.IntOpt(
         'evaluation_interval',
         help=_('How often will the executions be evaluated '
                '(in minutes). For example for value 120 the interval '
-               'will be 2 hours (every 2 hours).'
+               'will be 2 hours (every 2 hours). '
                'Note that only final state executions will be removed: '
                '( SUCCESS / ERROR / CANCELLED ).')
     ),
@@ -288,12 +351,12 @@ execution_expiration_policy_opts = [
     cfg.IntOpt(
         'max_finished_executions',
         default=0,
-        help=_('The maximum number of finished workflow executions'
-               'to be stored. For example when max_finished_executions = 100,'
-               'only the 100 latest finished executions will be preserved.'
-               'This means that even unexpired executions are eligible'
-               'for deletion, to decrease the number of executions in the'
-               'database. The default value is 0. If it is set to 0,'
+        help=_('The maximum number of finished workflow executions '
+               'to be stored. For example when max_finished_executions = 100, '
+               'only the 100 latest finished executions will be preserved. '
+               'This means that even unexpired executions are eligible '
+               'for deletion, to decrease the number of executions in the '
+               'database. The default value is 0. If it is set to 0, '
                'this constraint won\'t be applied.')
     ),
     cfg.IntOpt(
@@ -301,8 +364,41 @@ execution_expiration_policy_opts = [
         default=0,
         help=_('Size of batch of expired executions to be deleted.'
                'The default value is 0. If it is set to 0, '
-               'size of batch is total number of expired executions'
+               'size of batch is total number of expired executions '
                'that is going to be deleted.')
+    )
+]
+
+action_heartbeat_opts = [
+    cfg.IntOpt(
+        'max_missed_heartbeats',
+        min=0,
+        default=15,
+        help=_('The maximum amount of missed heartbeats to be allowed. '
+               'If set to 0 then this feature won\'t be enabled. '
+               'See check_interval for more details.')
+    ),
+    cfg.IntOpt(
+        'check_interval',
+        min=0,
+        default=20,
+        help=_('How often the action executions are checked (in seconds). '
+               'For example when check_interval = 10, check action '
+               'executions every 10 seconds. When the checker runs it will '
+               'transit all running action executions to error if the last '
+               'heartbeat received is older than 10 * max_missed_heartbeats '
+               'seconds. If set to 0 then this feature won\'t be enabled.')
+    ),
+    cfg.IntOpt(
+        'first_heartbeat_timeout',
+        min=0,
+        default=3600,
+        help=_('The first heartbeat is handled differently, to provide a '
+               'grace period in case there is no available executor to handle '
+               'the action execution. For example when '
+               'first_heartbeat_timeout = 3600, wait 3600 seconds before '
+               'closing the action executions that never received a heartbeat.'
+               )
     )
 ]
 
@@ -363,7 +459,7 @@ openstack_actions_opts = [
     ),
     cfg.ListOpt(
         'modules-support-region',
-        default=['nova', 'glance', 'ceilometer', 'heat', 'neutron', 'cinder',
+        default=['nova', 'glance', 'heat', 'neutron', 'cinder',
                  'trove', 'ironic', 'designate', 'murano', 'tacker', 'senlin',
                  'aodh', 'gnocchi'],
         help=_('List of module names that support region in actions.')
@@ -386,6 +482,59 @@ os_actions_mapping_path = cfg.StrOpt(
          'directory or absolute.'
 )
 
+yaql_opts = [
+    cfg.IntOpt(
+        'limit_iterators',
+        default=-1,
+        min=-1,
+        help=_('Limit iterators by the given number of elements. When set, '
+               'each time any function declares its parameter to be iterator, '
+               'that iterator is modified to not produce more than a given '
+               'number of items. If not set (or set to -1) the result data is '
+               'allowed to contain endless iterators that would cause errors '
+               'if the result where to be serialized.')
+    ),
+    cfg.IntOpt(
+        'memory_quota',
+        default=-1,
+        min=-1,
+        help=_('The memory usage quota (in bytes) for all data produced by '
+               'the expression (or any part of it). -1 means no limitation.')
+    ),
+    cfg.BoolOpt(
+        'convert_tuples_to_lists',
+        default=True,
+        help=_('When set to true, yaql converts all tuples in the expression '
+               'result to lists.')
+    ),
+    cfg.BoolOpt(
+        'convert_sets_to_lists',
+        default=False,
+        help=_('When set to true, yaql converts all sets in the expression '
+               'result to lists. Otherwise the produced result may contain '
+               'sets that are not JSON-serializable.')
+    ),
+    cfg.BoolOpt(
+        'iterable_dicts',
+        default=False,
+        help=_('When set to true, dictionaries are considered to be iterable '
+               'and iteration over dictionaries produces their keys (as in '
+               'Python and yaql 0.2).')
+    ),
+    cfg.StrOpt(
+        'keyword_operator',
+        default='=>',
+        help=_('Allows one to configure keyword/mapping symbol. '
+               'Ability to pass named arguments can be disabled altogether '
+               'if empty string is provided.')
+    ),
+    cfg.BoolOpt(
+        'allow_delegates',
+        default=False,
+        help=_('Enables or disables delegate expression parsing.')
+    )
+]
+
 CONF = cfg.CONF
 
 API_GROUP = 'api'
@@ -394,12 +543,15 @@ EXECUTOR_GROUP = 'executor'
 SCHEDULER_GROUP = 'scheduler'
 CRON_TRIGGER_GROUP = 'cron_trigger'
 EVENT_ENGINE_GROUP = 'event_engine'
+NOTIFIER_GROUP = 'notifier'
 PECAN_GROUP = 'pecan'
 COORDINATION_GROUP = 'coordination'
 EXECUTION_EXPIRATION_POLICY_GROUP = 'execution_expiration_policy'
+ACTION_HEARTBEAT_GROUP = 'action_heartbeat'
 PROFILER_GROUP = profiler.list_opts()[0][0]
 KEYCLOAK_OIDC_GROUP = "keycloak_oidc"
 OPENSTACK_ACTIONS_GROUP = 'openstack_actions'
+YAQL_GROUP = "yaql"
 
 
 CONF.register_opt(wf_trace_log_name_opt)
@@ -418,12 +570,18 @@ CONF.register_opts(
     execution_expiration_policy_opts,
     group=EXECUTION_EXPIRATION_POLICY_GROUP
 )
+CONF.register_opts(
+    action_heartbeat_opts,
+    group=ACTION_HEARTBEAT_GROUP
+)
 CONF.register_opts(event_engine_opts, group=EVENT_ENGINE_GROUP)
+CONF.register_opts(notifier_opts, group=NOTIFIER_GROUP)
 CONF.register_opts(pecan_opts, group=PECAN_GROUP)
 CONF.register_opts(coordination_opts, group=COORDINATION_GROUP)
 CONF.register_opts(profiler_opts, group=PROFILER_GROUP)
 CONF.register_opts(keycloak_oidc_opts, group=KEYCLOAK_OIDC_GROUP)
 CONF.register_opts(openstack_actions_opts, group=OPENSTACK_ACTIONS_GROUP)
+CONF.register_opts(yaql_opts, group=YAQL_GROUP)
 
 CLI_OPTS = [
     use_debugger_opt,
@@ -461,12 +619,17 @@ def list_opts():
         (ENGINE_GROUP, engine_opts),
         (EXECUTOR_GROUP, executor_opts),
         (EVENT_ENGINE_GROUP, event_engine_opts),
+        (SCHEDULER_GROUP, scheduler_opts),
+        (CRON_TRIGGER_GROUP, cron_trigger_opts),
+        (NOTIFIER_GROUP, notifier_opts),
         (PECAN_GROUP, pecan_opts),
         (COORDINATION_GROUP, coordination_opts),
         (EXECUTION_EXPIRATION_POLICY_GROUP, execution_expiration_policy_opts),
         (PROFILER_GROUP, profiler_opts),
         (KEYCLOAK_OIDC_GROUP, keycloak_oidc_opts),
         (OPENSTACK_ACTIONS_GROUP, openstack_actions_opts),
+        (YAQL_GROUP, yaql_opts),
+        (ACTION_HEARTBEAT_GROUP, action_heartbeat_opts),
         (None, default_group_opts)
     ]
 
@@ -481,7 +644,7 @@ def parse_args(args=None, usage=None, default_config_files=None):
     CONF(
         args=args,
         project='mistral',
-        version=version,
+        version=version.version_string,
         usage=usage,
         default_config_files=default_config_files
     )

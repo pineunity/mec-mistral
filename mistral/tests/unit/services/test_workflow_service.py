@@ -20,6 +20,7 @@ from oslo_config import cfg
 from mistral.db.v2.sqlalchemy import api as db_api
 from mistral import exceptions as exc
 from mistral.lang import parser as spec_parser
+from mistral.lang.v2 import tasks
 from mistral.services import workflows as wf_service
 from mistral.tests.unit import base
 from mistral import utils
@@ -80,17 +81,18 @@ wf1:
         result: "{$}"
 """
 
-WORKFLOW = """
+WORKFLOW_WITH_VAR_TASK_NAME = """
 ---
 version: '2.0'
 
 list_servers:
 
   tasks:
-    list_servers:
+    {task_name}:
       action: nova.servers_list
-
 """
+
+WORKFLOW = WORKFLOW_WITH_VAR_TASK_NAME.format(task_name='task1')
 
 INVALID_WORKFLOW = """
 ---
@@ -101,6 +103,34 @@ wf:
   tasks:
     task1:
       action: std.echo output="Task 1"
+"""
+
+WORKFLOW_WITH_LONG_TASK_NAME = """
+---
+version: '2.0'
+
+test_workflow:
+
+  tasks:
+    {long_task_name}:
+      action: std.noop
+
+"""
+
+WORKFLOW_WITH_LONG_JOIN_TASK_NAME = """
+---
+version: '2.0'
+
+test_workflow:
+
+  tasks:
+    task1:
+      on-success:
+        - {long_task_name}
+
+    {long_task_name}:
+      join: all
+
 """
 
 
@@ -124,6 +154,16 @@ class WorkflowServiceTest(base.DbTestCase):
 
         self.assertEqual('wf2', wf2_spec.get_name())
         self.assertEqual('direct', wf2_spec.get_type())
+
+    def test_invalid_task_name(self):
+        for name in tasks.RESERVED_TASK_NAMES:
+            wf = WORKFLOW_WITH_VAR_TASK_NAME.format(task_name=name)
+
+            self.assertRaises(
+                exc.InvalidModelException,
+                wf_service.create_workflows,
+                wf
+            )
 
     def test_update_workflows(self):
         db_wfs = wf_service.create_workflows(WORKFLOW_LIST)
@@ -220,7 +260,6 @@ class WorkflowServiceTest(base.DbTestCase):
                 )
 
                 self.assertDictEqual(update_env, updated.params['env'])
-                self.assertDictEqual(update_env, updated.context['__env'])
 
                 fetched = db_api.get_workflow_execution(created.id)
 
@@ -279,3 +318,41 @@ class WorkflowServiceTest(base.DbTestCase):
                 wf_exec['context']['__env'],
                 fetched.context['__env']
             )
+
+    def test_with_long_task_name(self):
+        long_task_name = utils.generate_string(tasks.MAX_LENGTH_TASK_NAME + 1)
+        workflow = WORKFLOW_WITH_LONG_TASK_NAME.format(
+            long_task_name=long_task_name)
+
+        self.assertRaises(
+            exc.InvalidModelException,
+            wf_service.create_workflows,
+            workflow
+        )
+
+    def test_upper_bound_length_task_name(self):
+        long_task_name = utils.generate_string(tasks.MAX_LENGTH_TASK_NAME)
+        workflow = WORKFLOW_WITH_LONG_TASK_NAME.format(
+            long_task_name=long_task_name)
+
+        wf_service.create_workflows(workflow)
+
+    def test_with_long_join_task_name(self):
+        long_task_name = utils.generate_string(
+            tasks.MAX_LENGTH_JOIN_TASK_NAME + 1
+        )
+        workflow = WORKFLOW_WITH_LONG_JOIN_TASK_NAME.format(
+            long_task_name=long_task_name)
+
+        self.assertRaises(
+            exc.InvalidModelException,
+            wf_service.create_workflows,
+            workflow
+        )
+
+    def test_upper_bound_length_join_task_name(self):
+        long_task_name = utils.generate_string(tasks.MAX_LENGTH_JOIN_TASK_NAME)
+        workflow = WORKFLOW_WITH_LONG_JOIN_TASK_NAME.format(
+            long_task_name=long_task_name)
+
+        wf_service.create_workflows(workflow)

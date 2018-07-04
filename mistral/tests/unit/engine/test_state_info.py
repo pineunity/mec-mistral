@@ -46,7 +46,7 @@ class ExecutionStateInfoTest(base.EngineTestCase):
         wf_service.create_workflows(workflow)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('test_wf', '', {})
+        wf_ex = self.engine.start_workflow('test_wf')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -70,7 +70,7 @@ class ExecutionStateInfoTest(base.EngineTestCase):
         wf_service.create_workflows(workflow)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('test_wf', '', {})
+        wf_ex = self.engine.start_workflow('test_wf')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -96,7 +96,7 @@ class ExecutionStateInfoTest(base.EngineTestCase):
         wf_service.create_workflows(workflow)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('test_wf', '', {})
+        wf_ex = self.engine.start_workflow('test_wf')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -131,7 +131,7 @@ class ExecutionStateInfoTest(base.EngineTestCase):
 
         wf_service.create_workflows(workflow)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -169,3 +169,30 @@ class ExecutionStateInfoTest(base.EngineTestCase):
 
         for action_ex in success_actions:
             self.assertNotIn(action_ex.id, wf_ex.state_info)
+
+    def test_state_info_with_json(self):
+        workflow = """---
+        version: "2.0"
+        wf_state_info:
+          type: direct
+          tasks:
+            main_task:
+              action: std.test_dict
+              input:
+                size: 1
+                key_prefix: "abc"
+                val: "pqr"
+              on-success:
+                - fail msg="<% task().result %>"
+        """
+        wf_service.create_workflows(workflow)
+
+        # Start workflow.
+        wf_ex = self.engine.start_workflow('wf_state_info')
+
+        self.await_workflow_error(wf_ex.id)
+
+        # Note: We need to reread execution to access related tasks.
+        wf_ex = db_api.get_workflow_execution(wf_ex.id)
+
+        self.assertIn('{"abc0": "pqr"}', wf_ex.state_info)

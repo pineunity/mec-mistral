@@ -18,11 +18,11 @@ import contextlib
 import datetime
 import functools
 import json
-import logging
 import os
 from os import path
 import shutil
 import socket
+import string
 import sys
 import tempfile
 import threading
@@ -30,13 +30,13 @@ import threading
 import eventlet
 from eventlet import corolocal
 from oslo_concurrency import processutils
+from oslo_log import log as logging
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
 import pkg_resources as pkg
 import random
 
 from mistral import exceptions as exc
-from mistral import version
 
 
 # Thread local storage.
@@ -176,10 +176,7 @@ def update_dict(left, right):
 
 
 def get_file_list(directory):
-    base_path = pkg.resource_filename(
-        version.version_info.package,
-        directory
-    )
+    base_path = pkg.resource_filename("mistral", directory)
 
     return [path.join(base_path, f) for f in os.listdir(base_path)
             if path.isfile(path.join(base_path, f))]
@@ -219,43 +216,41 @@ def cut_dict(d, length=100):
         v = str(value)
 
         # Processing key.
-        new_len = len(res) + len(k)
+        new_len = len(k)
 
         is_str = isinstance(key, str)
 
         if is_str:
-            new_len += 2
+            new_len += 2    # Account for the quotation marks
 
-        if new_len >= length:
-            res += "'%s..." % k[:length - new_len] if is_str else "%s..." % k
-
+        if 0 <= length <= new_len + len(res):
+            res += "'%s" % k if is_str else k
             break
         else:
             res += "'%s'" % k if is_str else k
-            res += ": "
+
+        res += ": "
 
         # Processing value.
-        new_len = len(res) + len(v)
+        new_len = len(v)
 
         is_str = isinstance(value, str)
 
         if is_str:
             new_len += 2
 
-        if new_len >= length:
-            res += "'%s..." % v[:length - new_len] if is_str else "%s..." % v
-
+        if 0 <= length <= new_len + len(res):
+            res += "'%s" % v if is_str else v
             break
         else:
             res += "'%s'" % v if is_str else v
-            res += ', ' if idx < len(d) - 1 else '}'
 
-        if len(res) >= length:
-            res += '...'
-
-            break
+        res += ', ' if idx < len(d) - 1 else '}'
 
         idx += 1
+
+    if 0 <= length <= len(res) and res[length - 1] is not '}':
+        res = res[:length - 3] + '...'
 
     return res
 
@@ -276,19 +271,21 @@ def cut_list(l, length=100):
         if is_str:
             new_len += 2
 
-        if new_len >= length:
-            res += "'%s..." % s[:length - new_len] if is_str else "%s..." % s
-
+        if 0 <= length <= new_len:
+            res += "'%s" % s if is_str else s
             break
         else:
             res += "'%s'" % s if is_str else s
-            res += ', ' if idx < len(l) - 1 else ']'
+        res += ', ' if idx < len(l) - 1 else ']'
+
+    if 0 <= length <= len(res) and res[length - 1] is not ']':
+        res = res[:length - 3] + '...'
 
     return res
 
 
 def cut_string(s, length=100):
-    if len(s) > length:
+    if 0 <= length < len(s):
         return "%s..." % s[:length]
 
     return s
@@ -308,12 +305,11 @@ def cut(data, length=100):
 
 
 def cut_by_kb(data, kilobytes):
-    if kilobytes <= 0:
-        return cut(data)
+    length = get_number_of_chars_from_kilobytes(kilobytes)
+    return cut(data, length)
 
-    bytes_per_char = sys.getsizeof('s') - sys.getsizeof('')
-    length = int(kilobytes * 1024 / bytes_per_char)
 
+def cut_by_char(data, length):
     return cut(data, length)
 
 
@@ -363,6 +359,12 @@ class NotDefined(object):
     """
 
     pass
+
+
+def get_number_of_chars_from_kilobytes(kilobytes):
+    bytes_per_char = sys.getsizeof('s') - sys.getsizeof('')
+    total_number_of_chars = int(kilobytes * 1024 / bytes_per_char)
+    return total_number_of_chars
 
 
 def get_dict_from_string(string, delimiter=','):
@@ -489,7 +491,12 @@ def generate_key_pair(key_length=2048):
 def utc_now_sec():
     """Returns current time and drops microseconds."""
 
-    return timeutils.utcnow().replace(microsecond=0)
+    return drop_microseconds(timeutils.utcnow())
+
+
+def drop_microseconds(date):
+    """Drops microseconds and returns date."""
+    return date.replace(microsecond=0)
 
 
 def datetime_to_str(val, sep=' '):
@@ -519,3 +526,15 @@ def datetime_to_str_in_dict(d, key, sep=' '):
 
     if val is not None:
         d[key] = datetime_to_str(d[key], sep=sep)
+
+
+def generate_string(length):
+    """Returns random string.
+
+    :param length: the length of returned string
+    """
+
+    return ''.join(random.choice(
+        string.ascii_uppercase + string.digits)
+        for _ in range(length)
+    )

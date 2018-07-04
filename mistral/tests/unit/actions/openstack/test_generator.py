@@ -38,12 +38,12 @@ MODULE_MAPPING = {
     'heat': ['heat.stacks_list', actions.HeatAction],
     'neutron': ['neutron.show_network', actions.NeutronAction],
     'cinder': ['cinder.volumes_list', actions.CinderAction],
-    'ceilometer': ['ceilometer.alarms_list', actions.CeilometerAction],
     'trove': ['trove.instances_list', actions.TroveAction],
     'ironic': ['ironic.node_list', actions.IronicAction],
     'baremetal_introspection': ['baremetal_introspection.introspect',
                                 actions.BaremetalIntrospectionAction],
     'swift': ['swift.head_account', actions.SwiftAction],
+    'swiftservice': ['swiftservice.delete', actions.SwiftServiceAction],
     'zaqar': ['zaqar.queue_messages', actions.ZaqarAction],
     'barbican': ['barbican.orders_list', actions.BarbicanAction],
     'mistral': ['mistral.workflows_get', actions.MistralAction],
@@ -54,10 +54,13 @@ MODULE_MAPPING = {
     'senlin': ['senlin.get_profile', actions.SenlinAction],
     'aodh': ['aodh.alarm_list', actions.AodhAction],
     'gnocchi': ['gnocchi.metric_list', actions.GnocchiAction],
-    'glare': ['glare.artifacts_list', actions.GlareAction]
+    'glare': ['glare.artifacts_list', actions.GlareAction],
+    'vitrage': ['vitrage.alarm_get', actions.VitrageAction],
+    'zun': ['zun.containers_list', actions.ZunAction],
+    'qinling': ['qinling.runtimes_list', actions.QinlingAction]
 }
 
-EXTRA_MODULES = ['neutron', 'swift', 'zaqar', 'tacker']
+EXTRA_MODULES = ['neutron', 'swift', 'zaqar', 'tacker', 'senlin']
 
 
 CONF = cfg.CONF

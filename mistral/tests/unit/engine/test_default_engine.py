@@ -111,9 +111,8 @@ class DefaultEngineTest(base.DbTestCase):
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wb.wf',
-            '',
-            wf_input,
-            'my execution',
+            wf_input=wf_input,
+            description='my execution',
             task_name='task2'
         )
 
@@ -150,14 +149,40 @@ class DefaultEngineTest(base.DbTestCase):
         self.assertIsNotNone(task_action_ex)
         self.assertDictEqual({'output': 'Hey'}, task_action_ex.input)
 
+    def test_start_workflow_with_ex_id(self):
+        wf_input = {'param1': 'Hey1', 'param2': 'Hi1'}
+        the_ex_id = 'theId'
+
+        # Start workflow.
+        wf_ex = self.engine.start_workflow(
+            'wb.wf',
+            wf_input=wf_input,
+            description='my execution',
+            task_name='task2',
+            wf_ex_id=the_ex_id
+        )
+
+        self.assertEqual(the_ex_id, wf_ex.id)
+
+        wf_ex_2 = self.engine.start_workflow(
+            'wb.wf',
+            wf_input={'param1': 'Hey2', 'param2': 'Hi2'},
+            wf_ex_id=the_ex_id
+        )
+
+        self.assertDictEqual(dict(wf_ex), dict(wf_ex_2))
+
+        wf_executions = db_api.get_workflow_executions()
+
+        self.assertEqual(1, len(wf_executions))
+
     def test_start_workflow_with_input_default(self):
         wf_input = {'param2': 'value2'}
 
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wb.wf',
-            '',
-            wf_input,
+            wf_input=wf_input,
             task_name='task1'
         )
 
@@ -203,8 +228,7 @@ class DefaultEngineTest(base.DbTestCase):
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wb.wf',
-            '',
-            wf_input,
+            wf_input=wf_input,
             env=env,
             task_name='task2')
 
@@ -225,8 +249,7 @@ class DefaultEngineTest(base.DbTestCase):
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wb.wf',
-            '',
-            wf_input,
+            wf_input=wf_input,
             env='test',
             task_name='task2'
         )
@@ -243,8 +266,7 @@ class DefaultEngineTest(base.DbTestCase):
             exc.InputException,
             self.engine.start_workflow,
             'wb.wf',
-            '',
-            {
+            wf_input={
                 'param1': '<% env().key1 %>',
                 'param2': 'some value'
             },
@@ -259,8 +281,7 @@ class DefaultEngineTest(base.DbTestCase):
             exc.InputException,
             self.engine.start_workflow,
             'wb.wf',
-            '',
-            {
+            wf_input={
                 'param1': '<% env().key1 %>',
                 'param2': 'some value'
             },
@@ -288,8 +309,7 @@ class DefaultEngineTest(base.DbTestCase):
             exc.InputException,
             self.engine.start_workflow,
             'wb.wf',
-            '',
-            {
+            wf_input={
                 'param1': 'Hey',
                 'param2': 'Hi',
                 'unexpected_param': 'val'
@@ -430,8 +450,7 @@ class DefaultEngineTest(base.DbTestCase):
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wb.wf',
-            '',
-            wf_input,
+            wf_input=wf_input,
             task_name='task2'
         )
 
@@ -544,8 +563,7 @@ class DefaultEngineTest(base.DbTestCase):
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wb.wf',
-            '',
-            {
+            wf_input={
                 'param1': 'Hey',
                 'param2': 'Hi'
             },
@@ -567,8 +585,7 @@ class DefaultEngineTest(base.DbTestCase):
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wb.wf',
-            '',
-            {
+            wf_input={
                 'param1': 'Hey',
                 'param2': 'Hi'
             },
@@ -589,8 +606,7 @@ class DefaultEngineTest(base.DbTestCase):
     def test_stop_workflow_bad_status(self):
         wf_ex = self.engine.start_workflow(
             'wb.wf',
-            '',
-            {
+            wf_input={
                 'param1': 'Hey',
                 'param2': 'Hi'
             },
@@ -608,6 +624,41 @@ class DefaultEngineTest(base.DbTestCase):
     def test_resume_workflow(self):
         # TODO(akhmerov): Implement.
         pass
+
+    def test_report_running_actions(self):
+        wf_input = {'param1': 'Hey', 'param2': 'Hi'}
+
+        # Start workflow.
+        wf_ex = self.engine.start_workflow(
+            'wb.wf',
+            '',
+            wf_input=wf_input,
+            description='my execution',
+            task_name='task2'
+        )
+
+        with db_api.transaction():
+            wf_ex = db_api.get_workflow_execution(wf_ex.id)
+
+            task_execs = wf_ex.task_executions
+
+        self.assertEqual(1, len(task_execs))
+
+        task_ex = task_execs[0]
+
+        action_execs = db_api.get_action_executions(
+            task_execution_id=task_ex.id
+        )
+
+        task_action_ex = action_execs[0]
+
+        self.engine.report_running_actions([])
+        self.engine.report_running_actions([None, None])
+        self.engine.report_running_actions([None, task_action_ex.id])
+
+        task_action_ex = db_api.get_action_execution(task_action_ex.id)
+
+        self.assertIsNotNone(task_action_ex.last_heartbeat)
 
 
 class DefaultEngineWithTransportTest(eng_test_base.EngineTestCase):

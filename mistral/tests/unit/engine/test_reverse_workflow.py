@@ -68,12 +68,14 @@ class ReverseWorkflowEngineTest(base.EngineTestCase):
         wb_service.create_workbook_v2(WORKBOOK)
 
     def test_start_task1(self):
-        wf_input = {'param1': 'a', 'param2': 'b'}
+        wf_input = {
+            'param1': 'a',
+            'param2': 'b'
+        }
 
         wf_ex = self.engine.start_workflow(
             'my_wb.wf1',
-            '',
-            wf_input,
+            wf_input=wf_input,
             task_name='task1'
         )
 
@@ -81,7 +83,11 @@ class ReverseWorkflowEngineTest(base.EngineTestCase):
         self.assertIsNotNone(wf_ex)
         self.assertDictEqual(wf_input, wf_ex.input)
         self.assertDictEqual(
-            {'task_name': 'task1', 'namespace': ''},
+            {
+                'task_name': 'task1',
+                'namespace': '',
+                'env': {}
+            },
             wf_ex.params
         )
 
@@ -105,12 +111,14 @@ class ReverseWorkflowEngineTest(base.EngineTestCase):
         self.assertDictEqual({'result1': 'a'}, task_ex.published)
 
     def test_start_task2(self):
-        wf_input = {'param1': 'a', 'param2': 'b'}
+        wf_input = {
+            'param1': 'a',
+            'param2': 'b'
+        }
 
         wf_ex = self.engine.start_workflow(
             'my_wb.wf1',
-            '',
-            wf_input,
+            wf_input=wf_input,
             task_name='task2'
         )
 
@@ -118,7 +126,11 @@ class ReverseWorkflowEngineTest(base.EngineTestCase):
         self.assertIsNotNone(wf_ex)
         self.assertDictEqual(wf_input, wf_ex.input)
         self.assertDictEqual(
-            {'task_name': 'task2', 'namespace': ''},
+            {
+                'task_name': 'task2',
+                'namespace': '',
+                'env': {}
+            },
             wf_ex.params
         )
 
@@ -154,8 +166,7 @@ class ReverseWorkflowEngineTest(base.EngineTestCase):
 
         wf_ex = self.engine.start_workflow(
             'my_wb.wf1',
-            '',
-            wf_input,
+            wf_input=wf_input,
             task_name='task4'
         )
 

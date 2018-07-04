@@ -293,6 +293,17 @@ class TestWorkflowsController(base.APITest):
 
         self.assertEqual("public", mock_update.call_args[0][1]['scope'])
 
+    def test_put_wrong_scope(self):
+        resp = self.app.put(
+            '/v2/workflows?scope=unique',
+            UPDATED_WF_DEFINITION,
+            headers={'Content-Type': 'text/plain'},
+            expect_errors=True
+        )
+
+        self.assertEqual(400, resp.status_int)
+        self.assertIn("Scope must be one of the following", resp.body.decode())
+
     @mock.patch.object(
         db_api, "update_workflow_definition", MOCK_WF_WITH_INPUT
     )
@@ -381,10 +392,7 @@ class TestWorkflowsController(base.APITest):
 
         self.assertEqual("public", mock_mtd.call_args[0][0]['scope'])
 
-    @mock.patch.object(db_api, "create_action_definition")
-    def test_post_wrong_scope(self, mock_mtd):
-        mock_mtd.return_value = WF_DB
-
+    def test_post_wrong_scope(self):
         resp = self.app.post(
             '/v2/workflows?scope=unique',
             WF_DEFINITION,
@@ -578,6 +586,32 @@ class TestWorkflowsController(base.APITest):
         expected_dict = {
             'id': '123e4567-e89b-12d3-a456-426655440000',
             'name': 'fake_name'
+        }
+
+        self.assertDictEqual(expected_dict, resp.json['workflows'][0])
+
+    @mock.patch('mistral.db.v2.api.get_workflow_definitions')
+    def test_get_all_with_fields_input_filter(self, mock_get_db_wfs):
+        def mock_get_defintions(fields=None, session=None, **kwargs):
+            if fields and 'input' in fields:
+                fields.remove('input')
+                fields.append('spec')
+
+            return [
+                ('65df1f59-938f-4c17-bc2a-562524ef5e40',
+                 {'input': ['param1', {'param2': 2}]})
+            ]
+
+        mock_get_db_wfs.side_effect = mock_get_defintions
+
+        resp = self.app.get('/v2/workflows?fields=input')
+
+        self.assertEqual(200, resp.status_int)
+        self.assertEqual(1, len(resp.json['workflows']))
+
+        expected_dict = {
+            'id': '65df1f59-938f-4c17-bc2a-562524ef5e40',
+            'input': 'param1, param2=2'
         }
 
         self.assertDictEqual(expected_dict, resp.json['workflows'][0])

@@ -123,7 +123,7 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
         wf_service.create_workflows(new_wf)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -136,13 +136,12 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
         e = self.assertRaises(
             exc.SizeLimitExceededException,
             self.engine.start_workflow,
-            'wf',
-            '',
-            {}
+            'wf'
         )
 
         self.assertEqual(
-            "Size of 'input' is 1KB which exceeds the limit of 0KB",
+            'Field size limit exceeded'
+            ' [class=TaskExecution, field=input, size=1KB, limit=0KB]',
             str(e)
         )
 
@@ -154,12 +153,12 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
             exc.SizeLimitExceededException,
             self.engine.start_workflow,
             'wf',
-            '',
-            {'workflow_input': ''.join('A' for _ in range(1024))}
+            wf_input={'workflow_input': ''.join('A' for _ in range(1024))}
         )
 
         self.assertEqual(
-            "Size of 'input' is 1KB which exceeds the limit of 0KB",
+            'Field size limit exceeded'
+            ' [class=TaskExecution, field=input, size=1KB, limit=0KB]',
             str(e)
         )
 
@@ -169,11 +168,12 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
         wf_service.create_workflows(new_wf)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.assertEqual(states.ERROR, wf_ex.state)
         self.assertIn(
-            "Size of 'input' is 1KB which exceeds the limit of 0KB",
+            "Field size limit exceeded"
+            " [class=TaskExecution, field=input, size=1KB, limit=0KB]",
             wf_ex.state_info
         )
 
@@ -183,8 +183,7 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wf',
-            '',
-            {'action_output_length': 1024}
+            wf_input={'action_output_length': 1024}
         )
 
         self.await_workflow_error(wf_ex.id)
@@ -193,7 +192,8 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
         wf_ex = db_api.get_workflow_execution(wf_ex.id)
 
         self.assertIn(
-            "Size of 'output' is 1KB which exceeds the limit of 0KB",
+            'Field size limit exceeded'
+            ' [class=TaskExecution, field=output, size=1KB, limit=0KB]',
             wf_ex.state_info
         )
         self.assertEqual(states.ERROR, wf_ex.state)
@@ -204,7 +204,7 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
         wf_service.create_workflows(new_wf)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -215,7 +215,7 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
             task_execs = wf_ex.task_executions
 
         self.assertIn(
-            'Failed to handle action completion [error=Size of',
+            'Failed to handle action completion [error=Field size',
             wf_ex.state_info
         )
         self.assertIn('wf=wf, task=task1', wf_ex.state_info)
@@ -223,7 +223,8 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
         task_ex = self._assert_single_item(task_execs, name='task1')
 
         self.assertIn(
-            "Size of 'published' is 1KB which exceeds the limit of 0KB",
+            'Field size limit exceeded'
+            ' [class=TaskExecution, field=published, size=1KB, limit=0KB]',
             task_ex.state_info
         )
 
@@ -237,14 +238,12 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
             exc.SizeLimitExceededException,
             self.engine.start_workflow,
             'wf',
-            '',
-            {},
-            '',
             env={'param': long_string}
         )
 
         self.assertIn(
-            "Size of 'params' is 1KB which exceeds the limit of 0KB",
+            'Field size limit exceeded'
+            ' [class=TaskExecution, field=params, size=1KB, limit=0KB]',
             str(e)
         )
 
@@ -261,8 +260,7 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
         # Start workflow.
         wf_ex = self.engine.start_workflow(
             'wf',
-            '',
-            {
+            wf_input={
                 'action_output_length': 80000,
                 'action_output_dict': True,
                 'action_error': True
@@ -284,3 +282,29 @@ class ExecutionFieldsSizeLimitTest(base.EngineTestCase):
             self.assertGreater(len(task_ex.state_info), 65490)
             self.assertLess(len(wf_ex.state_info), 65536)
             self.assertGreater(len(wf_ex.state_info), 65490)
+
+    def test_fail_workflow_no_limit(self):
+        cfg.CONF.set_default(
+            'execution_field_size_limit_kb',
+            -1,
+            group='engine'
+        )
+
+        wf_service.create_workflows(WF)
+
+        # Start workflow.
+        wf_ex = self.engine.start_workflow(
+            'wf',
+            wf_input={
+                'action_output_length': 10000,
+                'action_output_dict': True,
+                'action_error': True
+            }
+        )
+
+        self.await_workflow_error(wf_ex.id)
+
+        with db_api.transaction():
+            wf_ex = db_api.get_workflow_execution(wf_ex.id)
+
+            self.assertGreater(len(wf_ex.output['result']), 10000)

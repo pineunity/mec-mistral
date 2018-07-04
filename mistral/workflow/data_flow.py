@@ -13,12 +13,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-import copy
-
 from oslo_config import cfg
 from oslo_log import log as logging
 
 from mistral import context as auth_ctx
+from mistral.db.v2 import api as db_api
 from mistral.db.v2.sqlalchemy import models
 from mistral import exceptions as exc
 from mistral import expressions as expr
@@ -190,7 +189,13 @@ def publish_variables(task_ex, task_spec):
 
     wf_ex = task_ex.workflow_execution
 
-    expr_ctx = ContextView(task_ex.in_context, wf_ex.context, wf_ex.input)
+    expr_ctx = ContextView(
+        get_current_task_dict(task_ex),
+        task_ex.in_context,
+        get_workflow_environment_dict(wf_ex),
+        wf_ex.context,
+        wf_ex.input
+    )
 
     if task_ex.name in expr_ctx:
         LOG.warning(
@@ -232,8 +237,18 @@ def evaluate_task_outbound_context(task_ex):
     :param task_ex: DB task.
     :return: Outbound task Data Flow context.
     """
+
+    # NOTE(rakhmerov): 'task_ex.in_context' has the SQLAlchemy specific
+    # type MutableDict. So we need to create a shallow copy using dict(...)
+    # initializer and use it. It's enough to be safe in order to manipulate
+    # with entries of the result dictionary, like adding more entries.
+    # However, we must not change values themselves because they are
+    # shared between the original dictionary and the newly created.
+    # It's better to avoid using the method copy.deepcopy() because on
+    # dictionaries with many entries it significantly increases memory
+    # footprint and reduces performance.
     in_context = (
-        copy.deepcopy(dict(task_ex.in_context))
+        dict(task_ex.in_context)
         if task_ex.in_context is not None else {}
     )
 
@@ -249,7 +264,12 @@ def evaluate_workflow_output(wf_ex, wf_output, ctx):
     """
 
     # Evaluate workflow 'output' clause using the final workflow context.
-    ctx_view = ContextView(ctx, wf_ex.context, wf_ex.input)
+    ctx_view = ContextView(
+        ctx,
+        get_workflow_environment_dict(wf_ex),
+        wf_ex.context,
+        wf_ex.input
+    )
 
     output = expr.evaluate_recursively(wf_output, ctx_view)
 
@@ -258,18 +278,13 @@ def evaluate_workflow_output(wf_ex, wf_output, ctx):
     return output or ctx
 
 
-def add_current_task_to_context(ctx, task_id, task_name):
-    ctx['__task_execution'] = {
-        'id': task_id,
-        'name': task_name
+def get_current_task_dict(task_ex):
+    return {
+        '__task_execution': {
+            'id': task_ex.id,
+            'name': task_ex.name
+        }
     }
-
-    return ctx
-
-
-def remove_internal_data_from_context(ctx):
-    if '__task_execution' in ctx:
-        del ctx['__task_execution']
 
 
 def add_openstack_data_to_context(wf_ex):
@@ -285,27 +300,7 @@ def add_openstack_data_to_context(wf_ex):
 def add_execution_to_context(wf_ex):
     wf_ex.context = wf_ex.context or {}
 
-    wf_ex.context['__execution'] = {
-        'id': wf_ex.id
-    }
-
-
-def add_environment_to_context(wf_ex):
-    # TODO(rakhmerov): This is redundant, we can always get env from WF params
-    wf_ex.context = wf_ex.context or {}
-
-    # If env variables are provided, add an evaluated copy into the context.
-    if 'env' in wf_ex.params:
-        env = copy.deepcopy(wf_ex.params['env'])
-
-        if ('evaluate_env' in wf_ex.params and
-                not wf_ex.params['evaluate_env']):
-            wf_ex.context['__env'] = env
-        else:
-            wf_ex.context['__env'] = expr.evaluate_recursively(
-                env,
-                {'__env': env}
-            )
+    wf_ex.context['__execution'] = {'id': wf_ex.id}
 
 
 def add_workflow_variables_to_context(wf_ex, wf_spec):
@@ -313,7 +308,11 @@ def add_workflow_variables_to_context(wf_ex, wf_spec):
 
     # The context for calculating workflow variables is workflow input
     # and other data already stored in workflow initial context.
-    ctx_view = ContextView(wf_ex.context, wf_ex.input)
+    ctx_view = ContextView(
+        get_workflow_environment_dict(wf_ex),
+        wf_ex.context,
+        wf_ex.input
+    )
 
     wf_vars = expr.evaluate_recursively(wf_spec.get_vars(), ctx_view)
 
@@ -327,3 +326,17 @@ def evaluate_object_fields(obj, context):
 
     for k, v in evaluated_fields.items():
         setattr(obj, k, v)
+
+
+def get_workflow_environment_dict(wf_ex):
+    if not wf_ex:
+        return {}
+
+    if wf_ex.root_execution_id:
+        return get_workflow_environment_dict(
+            db_api.get_workflow_execution(wf_ex.root_execution_id)
+        )
+
+    env_dict = wf_ex.params['env'] if 'env' in wf_ex.params else {}
+
+    return {'__env': env_dict}

@@ -16,7 +16,6 @@ from mistral.db.v2 import api as db_api
 from mistral import exceptions as exc
 from mistral.lang import parser as spec_parser
 from mistral import utils
-from mistral.workflow import data_flow
 from mistral.workflow import states
 from oslo_log import log as logging
 
@@ -98,6 +97,7 @@ def _append_all_workflows(definition, is_system, scope, namespace,
 def update_workflows(definition, scope='private', identifier=None,
                      namespace=''):
     LOG.debug("Updating workflows")
+
     wf_list_spec = spec_parser.get_workflow_list_spec_from_yaml(definition)
     wfs = wf_list_spec.get_workflows()
 
@@ -134,8 +134,6 @@ def update_workflow_execution_env(wf_ex, env):
         )
 
     wf_ex.params['env'] = utils.merge_dicts(wf_ex.params['env'], env)
-
-    data_flow.add_environment_to_context(wf_ex)
 
     return wf_ex
 

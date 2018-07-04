@@ -28,14 +28,16 @@ class Engine(object):
     """Engine interface."""
 
     @abc.abstractmethod
-    def start_workflow(self, wf_identifier, wf_namespace='', wf_input=None,
-                       description='', **params):
+    def start_workflow(self, wf_identifier, wf_namespace='', wf_ex_id=None,
+                       wf_input=None, description='', **params):
         """Starts the specified workflow.
 
         :param wf_identifier: Workflow ID or name. Workflow ID is recommended,
             workflow name will be deprecated since Mitaka.
+        :param wf_namespace: Workflow namespace.
         :param wf_input: Workflow input data as a dictionary.
-        :param wf_namespace: Workflow input data as a dictionary.
+        :param wf_ex_id: Workflow execution id. If passed, it will be set
+            in the new execution object.
         :param description: Execution description.
         :param params: Additional workflow type specific parameters.
         :return: Workflow execution object.
@@ -129,6 +131,14 @@ class Engine(object):
         """
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def report_running_actions(self, action_ex_ids):
+        """Receives the heartbeat about the running actions.
+
+        :param action_ex_ids: The action execution ids.
+        """
+        raise NotImplementedError
+
 
 @six.add_metaclass(abc.ABCMeta)
 class TaskPolicy(object):
@@ -150,6 +160,7 @@ class TaskPolicy(object):
 
         ctx_view = data_flow.ContextView(
             task_ex.in_context,
+            data_flow.get_workflow_environment_dict(wf_ex),
             wf_ex.context,
             wf_ex.input
         )
@@ -168,6 +179,7 @@ class TaskPolicy(object):
 
         ctx_view = data_flow.ContextView(
             task_ex.in_context,
+            data_flow.get_workflow_environment_dict(wf_ex),
             wf_ex.context,
             wf_ex.input
         )

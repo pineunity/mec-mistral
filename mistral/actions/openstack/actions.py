@@ -52,7 +52,6 @@ def _try_import(module_name):
 aodhclient = _try_import('aodhclient.v2.client')
 apmecclient = _try_import('apmecclient.v1_0.client')
 barbicanclient = _try_import('barbicanclient.client')
-ceilometerclient = _try_import('ceilometerclient.v2.client')
 cinderclient = _try_import('cinderclient.client')
 designateclient = _try_import('designateclient.v1')
 glanceclient = _try_import('glanceclient')
@@ -67,11 +66,15 @@ mistralclient = _try_import('mistralclient.api.v2.client')
 muranoclient = _try_import('muranoclient.v1.client')
 neutronclient = _try_import('neutronclient.v2_0.client')
 novaclient = _try_import('novaclient.client')
+qinlingclient = _try_import('qinlingclient.v1.client')
 senlinclient = _try_import('senlinclient.v1.client')
 swift_client = _try_import('swiftclient.client')
+swiftservice = _try_import('swiftclient.service')
 tackerclient = _try_import('tackerclient.v1_0.client')
 troveclient = _try_import('troveclient.v1.client')
+vitrageclient = _try_import('vitrageclient.v1.client')
 zaqarclient = _try_import('zaqarclient.queues.client')
+zunclient = _try_import('zunclient.v1.client')
 
 
 class NovaAction(base.OpenStackAction):
@@ -158,37 +161,6 @@ class KeystoneAction(base.OpenStackAction):
         httpclient.HTTPClient.authenticate = authenticate
 
         return fake_client
-
-
-class CeilometerAction(base.OpenStackAction):
-    _service_type = 'metering'
-
-    @classmethod
-    def _get_client_class(cls):
-        return ceilometerclient.Client
-
-    def _create_client(self, context):
-
-        LOG.debug("Ceilometer action security context: %s", context)
-
-        ceilometer_endpoint = self.get_service_endpoint()
-
-        endpoint_url = keystone_utils.format_url(
-            ceilometer_endpoint.url,
-            {'tenant_id': context.project_id}
-        )
-
-        return self._get_client_class()(
-            endpoint_url,
-            region_name=ceilometer_endpoint.region,
-            token=context.auth_token,
-            username=context.user_name,
-            insecure=context.insecure
-        )
-
-    @classmethod
-    def _get_fake_client(cls):
-        return cls._get_client_class()("")
 
 
 class HeatAction(base.OpenStackAction):
@@ -434,6 +406,35 @@ class SwiftAction(base.OpenStackAction):
         )
 
 
+class SwiftServiceAction(base.OpenStackAction):
+    _service_name = 'swift'
+
+    @classmethod
+    def _get_client_class(cls):
+        return swiftservice.SwiftService
+
+    def _create_client(self, context):
+
+        LOG.debug("Swift action security context: %s", context)
+
+        swift_endpoint = self.get_service_endpoint()
+
+        swift_opts = {
+            'os_storage_url': swift_endpoint.url % {
+                'tenant_id': context.project_id
+            },
+            'os_auth_token': context.auth_token,
+            'os_region_name': swift_endpoint.region,
+            'os_project_id': context.security.project_id,
+        }
+
+        return swiftservice.SwiftService(options=swift_opts)
+
+    @classmethod
+    def _get_client_method(cls, client):
+        return getattr(client, cls.client_method_name)
+
+
 class ZaqarAction(base.OpenStackAction):
     _service_type = 'messaging'
 
@@ -533,6 +534,41 @@ class ZaqarAction(base.OpenStackAction):
         queue = client.queue(queue_name)
 
         return queue.pop(count)
+
+    @staticmethod
+    def claim_messages(client, queue_name, **params):
+        """Claim messages from the queue
+
+        :param client: the Zaqar client
+        :type client: zaqarclient.queues.client
+
+        :param queue_name: Name of the target queue.
+        :type queue_name: `six.string_type`
+
+        :returns: List of claims
+        :rtype: `list`
+        """
+        queue = client.queue(queue_name)
+        return queue.claim(**params)
+
+    @staticmethod
+    def delete_messages(client, queue_name, messages):
+        """Delete messages from the queue
+
+        :param client: the Zaqar client
+        :type client: zaqarclient.queues.client
+
+        :param queue_name: Name of the target queue.
+        :type queue_name: `six.string_type`
+
+        :param messages: List of messages' ids to delete.
+        :type messages: *args of `six.string_type`
+
+        :returns: List of messages' ids that have been deleted
+        :rtype: `list`
+        """
+        queue = client.queue(queue_name)
+        return queue.delete_messages(*messages)
 
 
 class BarbicanAction(base.OpenStackAction):
@@ -786,7 +822,8 @@ class SenlinAction(base.OpenStackAction):
 
     @classmethod
     def _get_fake_client(cls):
-        return cls._get_client_class()("http://127.0.0.1:8778")
+        sess = keystone_utils.get_admin_session()
+        return cls._get_client_class()(authenticator=sess.auth)
 
 
 class AodhAction(base.OpenStackAction):
@@ -876,6 +913,92 @@ class GlareAction(base.OpenStackAction):
     @classmethod
     def _get_fake_client(cls):
         return cls._get_client_class()("http://127.0.0.1:9494/")
+
+
+class VitrageAction(base.OpenStackAction):
+    _service_type = 'rca'
+
+    @classmethod
+    def _get_client_class(cls):
+        return vitrageclient.Client
+
+    def _create_client(self, context):
+
+        LOG.debug("Vitrage action security context: %s", context)
+
+        vitrage_endpoint = self.get_service_endpoint()
+
+        endpoint_url = keystone_utils.format_url(
+            vitrage_endpoint.url,
+            {'tenant_id': context.project_id}
+        )
+
+        session_and_auth = self.get_session_and_auth(context)
+
+        return vitrageclient.Client(
+            session=session_and_auth['session'],
+            endpoint_override=endpoint_url
+        )
+
+    @classmethod
+    def _get_fake_client(cls):
+        return cls._get_client_class()()
+
+
+class ZunAction(base.OpenStackAction):
+    _service_name = 'appcontainer'
+
+    @classmethod
+    def _get_client_class(cls):
+        return zunclient.Client
+
+    def _create_client(self, context):
+
+        LOG.debug("Zun action security context: %s", context)
+
+        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        zun_endpoint = self.get_service_endpoint()
+        session_and_auth = self.get_session_and_auth(context)
+
+        client = self._get_client_class()(
+            '1',
+            endpoint_override=zun_endpoint.url,
+            auth_url=keystone_endpoint.url,
+            session=session_and_auth['session']
+        )
+
+        return client
+
+    @classmethod
+    def _get_fake_client(cls):
+        session = keystone_utils.get_admin_session()
+        return cls._get_client_class()(
+            endpoint_override="http://127.0.0.1:9517/",
+            session=session
+        )
+
+
+class QinlingAction(base.OpenStackAction):
+    _service_type = 'function-engine'
+
+    @classmethod
+    def _get_client_class(cls):
+        return qinlingclient.Client
+
+    def _create_client(self, context):
+        qinling_endpoint = self.get_service_endpoint()
+        session_and_auth = self.get_session_and_auth(context)
+
+        return self._get_client_class()(endpoint_override=qinling_endpoint.url,
+                                        session=session_and_auth['session'])
+
+    @classmethod
+    def _get_fake_client(cls):
+        session = keystone_utils.get_admin_session()
+        return cls._get_client_class()(
+            endpoint_override="http://127.0.0.1:7070/",
+            session=session
+        )
 
 
 class ApmecAction(base.OpenStackAction):

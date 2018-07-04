@@ -15,18 +15,18 @@
 
 from email import header
 from email.mime import text
-
 import json
-import requests
-import six
 import smtplib
 import time
+
+from oslo_log import log as logging
+import requests
+import six
 
 from mistral import exceptions as exc
 from mistral.utils import javascript
 from mistral.utils import ssh_utils
 from mistral_lib import actions
-from oslo_log import log as logging
 
 LOG = logging.getLogger(__name__)
 
@@ -42,6 +42,8 @@ class EchoAction(actions.Action):
     """
 
     def __init__(self, output):
+        super(EchoAction, self).__init__()
+
         self.output = output
 
     def run(self, context):
@@ -59,9 +61,6 @@ class NoOpAction(actions.Action):
     This action does nothing. It can be mostly useful for testing and
     debugging purposes.
     """
-    def __init__(self):
-        pass
-
     def run(self, context):
         LOG.info('Running no-op action')
 
@@ -80,20 +79,33 @@ class AsyncNoOpAction(NoOpAction):
 class FailAction(actions.Action):
     """'Always fail' action.
 
-    This action just always throws an instance of ActionException.
+    If you pass the `error_data` parameter, this action will be failed and
+    return this data as error data. Otherwise, the action just throws an
+    instance of ActionException.
+
     This behavior is useful in a number of cases, especially if we need to
     test a scenario where some of workflow tasks fail.
+
+    :param error_data: Action will be failed with this data
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, error_data=None):
+        super(FailAction, self).__init__()
+
+        self.error_data = error_data
 
     def run(self, context):
         LOG.info('Running fail action.')
 
+        if self.error_data:
+            return actions.Result(error=self.error_data)
+
         raise exc.ActionException('Fail action expected exception.')
 
     def test(self, context):
+        if self.error_data:
+            return actions.Result(error=self.error_data)
+
         raise exc.ActionException('Fail action expected exception.')
 
 
@@ -135,6 +147,7 @@ class HTTPAction(actions.Action):
                  allow_redirects=None,
                  proxies=None,
                  verify=None):
+        super(HTTPAction, self).__init__()
 
         if auth and len(auth.split(':')) == 2:
             self.auth = (auth.split(':')[0], auth.split(':')[1])
@@ -191,6 +204,10 @@ class HTTPAction(actions.Action):
                 verify=self.verify
             )
         except Exception as e:
+            LOG.exception(
+                "Failed to send HTTP request for action execution: %s",
+                context.execution.action_execution_id
+            )
             raise exc.ActionException("Failed to send HTTP request: %s" % e)
 
         LOG.info(
@@ -244,7 +261,7 @@ class MistralHTTPAction(HTTPAction):
         self.headers.update({
             'Mistral-Workflow-Name': exec_ctx.workflow_name,
             'Mistral-Workflow-Execution-Id': exec_ctx.workflow_execution_id,
-            'Mistral-Task-Id': exec_ctx.task_id,
+            'Mistral-Task-Id': exec_ctx.task_execution_id,
             'Mistral-Action-Execution-Id': exec_ctx.action_execution_id,
             'Mistral-Callback-URL': exec_ctx.callback_url,
         })
@@ -261,6 +278,7 @@ class MistralHTTPAction(HTTPAction):
 class SendEmailAction(actions.Action):
     def __init__(self, from_addr, to_addrs, smtp_server,
                  smtp_password=None, subject=None, body=None):
+        super(SendEmailAction, self).__init__()
         # TODO(dzimine): validate parameters
 
         # Task invocation parameters.
@@ -333,7 +351,9 @@ class SSHAction(actions.Action):
         return ssh_utils.execute_command
 
     def __init__(self, cmd, host, username,
-                 password=None, private_key_filename=None):
+                 password="", private_key_filename=None):
+        super(SSHAction, self).__init__()
+
         self.cmd = cmd
         self.host = host
         self.username = username
@@ -380,8 +400,7 @@ class SSHAction(actions.Action):
             return raise_exc(parent_exc=e)
 
     def test(self, context):
-        # TODO(rakhmerov): Implement.
-        return None
+        return json.dumps(self.params)
 
 
 class SSHProxiedAction(SSHAction):
@@ -422,6 +441,7 @@ class JavaScriptAction(actions.Action):
 
         Not the usual mistral context. That is passed during the run method
         """
+        super(JavaScriptAction, self).__init__()
 
         self.script = script
         self.js_context = context
@@ -448,6 +468,8 @@ class SleepAction(actions.Action):
     for testing and debugging purposes.
     """
     def __init__(self, seconds=1):
+        super(SleepAction, self).__init__()
+
         try:
             self._seconds = int(seconds)
             self._seconds = 0 if self._seconds < 0 else self._seconds
@@ -471,6 +493,8 @@ class TestDictAction(actions.Action):
     """Generates test dict."""
 
     def __init__(self, size=0, key_prefix='', val=''):
+        super(TestDictAction, self).__init__()
+
         self.size = size
         self.key_prefix = key_prefix
         self.val = val

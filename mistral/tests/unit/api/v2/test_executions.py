@@ -2,6 +2,7 @@
 # Copyright 2015 - StackStorm, Inc.
 # Copyright 2015 Huawei Technologies Co., Ltd.
 # Copyright 2016 - Brocade Communications Systems, Inc.
+# Copyright 2018 - Extreme Networks, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -125,14 +126,31 @@ WF_EX_JSON_WITH_DESC['description'] = WF_EX.description
 WF_EX_WITH_PROJECT_ID = WF_EX.get_clone()
 WF_EX_WITH_PROJECT_ID.project_id = '<default-project>'
 
+SOURCE_WF_EX = copy.deepcopy(WF_EX)
+SOURCE_WF_EX['source_execution_id'] = WF_EX.id
+SOURCE_WF_EX['id'] = uuidutils.generate_uuid()
+SOURCE_WF_EX_JSON_WITH_DESC = copy.deepcopy(WF_EX_JSON_WITH_DESC)
+SOURCE_WF_EX_JSON_WITH_DESC['id'] = SOURCE_WF_EX.id
+SOURCE_WF_EX_JSON_WITH_DESC['source_execution_id'] = \
+    SOURCE_WF_EX.source_execution_id
+
 MOCK_WF_EX = mock.MagicMock(return_value=WF_EX)
 MOCK_SUB_WF_EX = mock.MagicMock(return_value=SUB_WF_EX)
+MOCK_SOURCE_WF_EX = mock.MagicMock(return_value=SOURCE_WF_EX)
 MOCK_WF_EXECUTIONS = mock.MagicMock(return_value=[WF_EX])
 MOCK_UPDATED_WF_EX = mock.MagicMock(return_value=UPDATED_WF_EX)
 MOCK_DELETE = mock.MagicMock(return_value=None)
 MOCK_EMPTY = mock.MagicMock(return_value=[])
 MOCK_NOT_FOUND = mock.MagicMock(side_effect=exc.DBEntityNotFoundError())
 MOCK_ACTION_EXC = mock.MagicMock(side_effect=exc.ActionException())
+
+ERROR_WF_EX = copy.deepcopy(WF_EX)
+ERROR_WF_EX['state'] = states.ERROR
+MOCK_ERROR_WF_EX = mock.MagicMock(return_value=ERROR_WF_EX)
+
+SUCCESS_WF_EX = copy.deepcopy(WF_EX)
+SUCCESS_WF_EX['state'] = states.SUCCESS
+MOCK_SUCCESS_WF_EX = mock.MagicMock(return_value=SUCCESS_WF_EX)
 
 
 @mock.patch.object(rpc_base, '_IMPL_CLIENT', mock.Mock())
@@ -354,7 +372,11 @@ class TestExecutionsController(base.APITest):
         resp = self.app.put_json('/v2/executions/123', update_params)
 
         self.assertEqual(200, resp.status_int)
-        mock_ensure.assert_called_once_with('123')
+
+        mock_ensure.assert_called_once_with(
+            '123',
+            fields=(models.WorkflowExecution.id,)
+        )
         mock_update.assert_called_once_with('123', update_params)
 
     @mock.patch.object(
@@ -474,21 +496,190 @@ class TestExecutionsController(base.APITest):
         self.assertIn(expected_fault, resp.json['faultstring'])
 
     @mock.patch.object(rpc_clients.EngineClient, 'start_workflow')
-    def test_post(self, f):
-        f.return_value = WF_EX.to_dict()
+    def test_post_auto_id(self, start_wf_func):
+        # NOTE: In fact, we use "white box" testing here to understand
+        # if the REST controller calls other APIs as expected. This is
+        # the only way of testing available with the current testing
+        # infrastructure.
+        wf_ex_dict = WF_EX.to_dict()
+        start_wf_func.return_value = wf_ex_dict
 
-        resp = self.app.post_json('/v2/executions', WF_EX_JSON_WITH_DESC)
+        json_body = WF_EX_JSON_WITH_DESC.copy()
+
+        expected_json = WF_EX_JSON_WITH_DESC
+
+        resp = self.app.post_json('/v2/executions', json_body)
 
         self.assertEqual(201, resp.status_int)
-        self.assertDictEqual(WF_EX_JSON_WITH_DESC, resp.json)
+        self.assertDictEqual(expected_json, resp.json)
 
-        exec_dict = WF_EX_JSON_WITH_DESC
+        kwargs = json.loads(expected_json['params'])
+        kwargs['description'] = expected_json['description']
 
-        f.assert_called_once_with(
+        start_wf_func.assert_called_once_with(
+            expected_json['workflow_id'],
+            '',
+            wf_ex_dict['id'],
+            json.loads(expected_json['input']),
+            **kwargs
+        )
+
+    @mock.patch.object(rpc_clients.EngineClient, 'start_workflow')
+    @mock.patch.object(db_api, 'load_workflow_execution')
+    def test_post_with_exec_id_exec_doesnt_exist(self, load_wf_ex_func,
+                                                 start_wf_func):
+        # NOTE: In fact, we use "white box" testing here to understand
+        # if the REST controller calls other APIs as expected. This is
+        # the only way of testing available with the current testing
+        # infrastructure.
+
+        # Imitate that the execution doesn't exist in DB.
+        load_wf_ex_func.return_value = None
+        start_wf_func.return_value = WF_EX.to_dict()
+
+        # We want to pass execution ID in this case so we don't delete 'id'
+        # from the dict.
+        json_body = WF_EX_JSON_WITH_DESC.copy()
+
+        expected_json = WF_EX_JSON_WITH_DESC
+
+        resp = self.app.post_json('/v2/executions', json_body)
+
+        self.assertEqual(201, resp.status_int)
+        self.assertDictEqual(expected_json, resp.json)
+
+        load_wf_ex_func.assert_called_once_with(expected_json['id'])
+
+        kwargs = json.loads(expected_json['params'])
+        kwargs['description'] = expected_json['description']
+
+        start_wf_func.assert_called_once_with(
+            expected_json['workflow_id'],
+            '',
+            expected_json['id'],
+            json.loads(expected_json['input']),
+            **kwargs
+        )
+
+    @mock.patch.object(rpc_clients.EngineClient, 'start_workflow')
+    @mock.patch.object(db_api, 'load_workflow_execution')
+    def test_post_with_exec_id_exec_exists(self, load_wf_ex_func,
+                                           start_wf_func):
+        # NOTE: In fact, we use "white box" testing here to understand
+        # if the REST controller calls other APIs as expected. This is
+        # the only way of testing available with the current testing
+        # infrastructure.
+
+        # Imitate that the execution exists in DB.
+        load_wf_ex_func.return_value = WF_EX
+
+        # We want to pass execution ID in this case so we don't delete 'id'
+        # from the dict.
+        json_body = WF_EX_JSON_WITH_DESC.copy()
+
+        expected_json = WF_EX_JSON_WITH_DESC
+
+        resp = self.app.post_json('/v2/executions', json_body)
+
+        self.assertEqual(201, resp.status_int)
+        self.assertDictEqual(expected_json, resp.json)
+
+        load_wf_ex_func.assert_called_once_with(expected_json['id'])
+
+        # Note that "start_workflow" method on engine API should not be called
+        # in this case because we passed execution ID to the endpoint and the
+        # corresponding object exists.
+        start_wf_func.assert_not_called()
+
+    @mock.patch.object(db_api, 'get_workflow_execution', MOCK_WF_EX)
+    @mock.patch.object(rpc_clients.EngineClient, 'start_workflow')
+    def test_post_with_source_execution_id(self, wf_exec_mock):
+        wf_exec_mock.return_value = SOURCE_WF_EX.to_dict()
+
+        resp = self.app.post_json('/v2/executions/',
+                                  SOURCE_WF_EX_JSON_WITH_DESC)
+
+        source_wf_ex_json = copy.copy(SOURCE_WF_EX_JSON_WITH_DESC)
+        del source_wf_ex_json['source_execution_id']
+
+        self.assertEqual(201, resp.status_int)
+        self.assertDictEqual(source_wf_ex_json, resp.json)
+
+        exec_dict = source_wf_ex_json
+
+        expected_description = "{} Based on the execution '{}'".format(
+            exec_dict['description'],
+            SOURCE_WF_EX_JSON_WITH_DESC['source_execution_id']
+        )
+
+        wf_exec_mock.assert_called_once_with(
             exec_dict['workflow_id'],
             '',
+            exec_dict['id'],
             json.loads(exec_dict['input']),
+            description=expected_description,
+            **json.loads(exec_dict['params'])
+        )
+
+    @mock.patch.object(db_api, 'get_workflow_execution', MOCK_WF_EX)
+    @mock.patch.object(rpc_clients.EngineClient, 'start_workflow')
+    def test_post_with_src_exec_id_without_exec_id(self, wf_exec_mock):
+        source_wf_ex = copy.copy(SOURCE_WF_EX)
+
+        source_wf_ex_json = copy.copy(SOURCE_WF_EX_JSON_WITH_DESC)
+
+        wf_exec_mock.return_value = source_wf_ex.to_dict()
+
+        resp = self.app.post_json('/v2/executions/', source_wf_ex_json)
+
+        del source_wf_ex_json['source_execution_id']
+
+        self.assertEqual(201, resp.status_int)
+        self.assertDictEqual(source_wf_ex_json, resp.json)
+
+        exec_dict = source_wf_ex_json
+
+        expected_description = "{} Based on the execution '{}'".format(
             exec_dict['description'],
+            SOURCE_WF_EX_JSON_WITH_DESC['source_execution_id']
+        )
+
+        wf_exec_mock.assert_called_once_with(
+            exec_dict['workflow_id'],
+            '',
+            exec_dict['id'],
+            json.loads(exec_dict['input']),
+            description=expected_description,
+            **json.loads(exec_dict['params'])
+        )
+
+    @mock.patch.object(db_api, 'get_workflow_execution', MOCK_EMPTY)
+    @mock.patch.object(rpc_clients.EngineClient, 'start_workflow')
+    def test_post_without_source_execution_id(self, wf_exec_mock):
+        wf_exec_mock.return_value = SOURCE_WF_EX.to_dict()
+
+        source_wf_ex_json = copy.copy(SOURCE_WF_EX_JSON_WITH_DESC)
+        source_wf_ex_json['source_execution_id'] = ""
+        # here we want to pass an empty value into the api for the
+        # source execution id to make sure that the correct actions are
+        # taken.
+
+        resp = self.app.post_json('/v2/executions/', source_wf_ex_json)
+        self.assertEqual(201, resp.status_int)
+
+        del source_wf_ex_json['source_execution_id']
+        # here we have to remove the source execution key as the
+        # id is only used to perform a lookup.
+
+        self.assertDictEqual(source_wf_ex_json, resp.json)
+        exec_dict = source_wf_ex_json
+
+        wf_exec_mock.assert_called_once_with(
+            exec_dict['workflow_id'],
+            '',
+            exec_dict['id'],
+            json.loads(exec_dict['input']),
+            description=exec_dict['description'],
             **json.loads(exec_dict['params'])
         )
 
@@ -517,8 +708,40 @@ class TestExecutionsController(base.APITest):
 
         self.assertIn('Bad response: 400', context.args[0])
 
-    @mock.patch.object(db_api, 'delete_workflow_execution', MOCK_DELETE)
-    def test_delete(self):
+    @mock.patch.object(
+        db_api,
+        'get_workflow_execution',
+        mock.MagicMock(return_value=(states.RUNNING,))
+    )
+    def test_delete_running_execution(self):
+        resp = self.app.delete('/v2/executions/123', expect_errors=True)
+
+        self.assertEqual(403, resp.status_int)
+        self.assertIn(
+            "Only completed executions can be deleted. "
+            "Use --force to override this. "
+            "Execution 123 is in RUNNING state",
+            resp.body.decode()
+        )
+
+    @mock.patch.object(db_api,
+                       'get_workflow_execution',
+                       mock.MagicMock(return_value=(states.ERROR,)))
+    @mock.patch.object(db_api,
+                       'delete_workflow_execution',
+                       MOCK_DELETE)
+    def test_delete_error_exec(self):
+        resp = self.app.delete('/v2/executions/123')
+
+        self.assertEqual(204, resp.status_int)
+
+    @mock.patch.object(db_api,
+                       'get_workflow_execution',
+                       mock.MagicMock(return_value=(states.SUCCESS,)))
+    @mock.patch.object(db_api,
+                       'delete_workflow_execution',
+                       MOCK_DELETE)
+    def test_delete_success_exec(self):
         resp = self.app.delete('/v2/executions/123')
 
         self.assertEqual(204, resp.status_int)
@@ -657,7 +880,10 @@ class TestExecutionsController(base.APITest):
         args, kwargs = mock_get_all.call_args
         resource_function = kwargs['resource_function']
 
-        self.assertEqual(execution._get_execution_resource, resource_function)
+        self.assertEqual(
+            execution._get_workflow_execution_resource,
+            resource_function
+        )
 
     @mock.patch.object(db_api, 'get_workflow_executions', MOCK_WF_EXECUTIONS)
     @mock.patch.object(rest_utils, 'get_all')

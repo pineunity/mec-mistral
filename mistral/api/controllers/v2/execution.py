@@ -2,6 +2,7 @@
 # Copyright 2015 - StackStorm, Inc.
 # Copyright 2015 Huawei Technologies Co., Ltd.
 # Copyright 2016 - Brocade Communications Systems, Inc.
+# Copyright 2018 - Extreme Networks, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -16,9 +17,8 @@
 #    limitations under the License.
 
 from oslo_log import log as logging
+from oslo_utils import uuidutils
 from pecan import rest
-import sqlalchemy as sa
-import tenacity
 from wsme import types as wtypes
 import wsmeext.pecan as wsme_pecan
 
@@ -28,13 +28,14 @@ from mistral.api.controllers.v2 import task
 from mistral.api.controllers.v2 import types
 from mistral import context
 from mistral.db.v2 import api as db_api
+from mistral.db.v2.sqlalchemy import models as db_models
 from mistral import exceptions as exc
 from mistral.rpc import clients as rpc
 from mistral.services import workflows as wf_service
 from mistral.utils import filter_utils
+from mistral.utils import merge_dicts
 from mistral.utils import rest_utils
 from mistral.workflow import states
-
 
 LOG = logging.getLogger(__name__)
 
@@ -49,30 +50,31 @@ STATE_TYPES = wtypes.Enum(
 )
 
 
-def _get_execution_resource(wf_ex):
-    # We need to refer to this lazy-load field explicitly in
-    # order to make sure that it is correctly loaded.
-    hasattr(wf_ex, 'output')
+def _load_deferred_output_field(ex):
+    if ex:
+        # We need to refer to this lazy-load field explicitly in
+        # order to make sure that it is correctly loaded.
+        hasattr(ex, 'output')
+
+    return ex
+
+
+def _get_workflow_execution_resource(wf_ex):
+    _load_deferred_output_field(wf_ex)
 
     return resources.Execution.from_db_model(wf_ex)
 
 
 # Use retries to prevent possible failures.
-@tenacity.retry(
-    retry=tenacity.retry_if_exception_type(sa.exc.OperationalError),
-    stop=tenacity.stop_after_attempt(10),
-    wait=tenacity.wait_incrementing(increment=100)  # 0.1 seconds
-)
-def _get_workflow_execution(id):
+@rest_utils.rest_retry_on_db_error
+def _get_workflow_execution(id, must_exist=True):
     with db_api.transaction():
-        wf_ex = db_api.get_workflow_execution(id)
+        if must_exist:
+            wf_ex = db_api.get_workflow_execution(id)
+        else:
+            wf_ex = db_api.load_workflow_execution(id)
 
-        # If a single object is requested we need to explicitly load
-        # 'output' attribute. We don't do this for collections to reduce
-        # amount of DB queries and network traffic.
-        hasattr(wf_ex, 'output')
-
-        return wf_ex
+        return _load_deferred_output_field(wf_ex)
 
 
 # TODO(rakhmerov): Make sure to make all needed renaming on public API.
@@ -112,55 +114,66 @@ class ExecutionsController(rest.RestController):
 
         LOG.debug('Update execution [id=%s, execution=%s]', id, wf_ex)
 
-        with db_api.transaction():
-            # ensure that workflow execution exists
-            db_api.get_workflow_execution(id)
-
-            delta = {}
-
-            if wf_ex.state:
-                delta['state'] = wf_ex.state
-
-            if wf_ex.description:
-                delta['description'] = wf_ex.description
-
-            if wf_ex.params and wf_ex.params.get('env'):
-                delta['env'] = wf_ex.params.get('env')
-
-            # Currently we can change only state, description, or env.
-            if len(delta.values()) <= 0:
-                raise exc.InputException(
-                    'The property state, description, or env '
-                    'is not provided for update.'
-                )
-
-            # Description cannot be updated together with state.
-            if delta.get('description') and delta.get('state'):
-                raise exc.InputException(
-                    'The property description must be updated '
-                    'separately from state.'
-                )
-
-            # If state change, environment cannot be updated if not RUNNING.
-            if (delta.get('env') and
-                    delta.get('state') and delta['state'] != states.RUNNING):
-                raise exc.InputException(
-                    'The property env can only be updated when workflow '
-                    'execution is not running or on resume from pause.'
-                )
-
-            if delta.get('description'):
-                wf_ex = db_api.update_workflow_execution(
+        @rest_utils.rest_retry_on_db_error
+        def _compute_delta(wf_ex):
+            with db_api.transaction():
+                # ensure that workflow execution exists
+                db_api.get_workflow_execution(
                     id,
-                    {'description': delta['description']}
+                    fields=(db_models.WorkflowExecution.id,)
                 )
 
-            if not delta.get('state') and delta.get('env'):
-                wf_ex = db_api.get_workflow_execution(id)
-                wf_ex = wf_service.update_workflow_execution_env(
-                    wf_ex,
-                    delta.get('env')
-                )
+                delta = {}
+
+                if wf_ex.state:
+                    delta['state'] = wf_ex.state
+
+                if wf_ex.description:
+                    delta['description'] = wf_ex.description
+
+                if wf_ex.params and wf_ex.params.get('env'):
+                    delta['env'] = wf_ex.params.get('env')
+
+                # Currently we can change only state, description, or env.
+                if len(delta.values()) <= 0:
+                    raise exc.InputException(
+                        'The property state, description, or env '
+                        'is not provided for update.'
+                    )
+
+                # Description cannot be updated together with state.
+                if delta.get('description') and delta.get('state'):
+                    raise exc.InputException(
+                        'The property description must be updated '
+                        'separately from state.'
+                    )
+
+                # If state change, environment cannot be updated
+                # if not RUNNING.
+                if (delta.get('env') and
+                        delta.get('state') and
+                        delta['state'] != states.RUNNING):
+                    raise exc.InputException(
+                        'The property env can only be updated when workflow '
+                        'execution is not running or on resume from pause.'
+                    )
+
+                if delta.get('description'):
+                    wf_ex = db_api.update_workflow_execution(
+                        id,
+                        {'description': delta['description']}
+                    )
+
+                if not delta.get('state') and delta.get('env'):
+                    wf_ex = db_api.get_workflow_execution(id)
+                    wf_ex = wf_service.update_workflow_execution_env(
+                        wf_ex,
+                        delta.get('env')
+                    )
+
+                return delta, wf_ex
+
+        delta, wf_ex = _compute_delta(wf_ex)
 
         if delta.get('state'):
             if states.is_paused(delta.get('state')):
@@ -211,38 +224,92 @@ class ExecutionsController(rest.RestController):
 
         LOG.debug("Create execution [execution=%s]", wf_ex)
 
-        engine = rpc.get_engine_client()
         exec_dict = wf_ex.to_dict()
 
-        if not (exec_dict.get('workflow_id')
-                or exec_dict.get('workflow_name')):
+        exec_id = exec_dict.get('id')
+
+        if not exec_id:
+            exec_id = uuidutils.generate_uuid()
+            LOG.debug("Generated execution id [exec_id=%s]", exec_id)
+            exec_dict.update({'id': exec_id})
+            wf_ex = None
+        else:
+            # If ID is present we need to check if such execution exists.
+            # If yes, the method just returns the object. If not, the ID
+            # will be used to create a new execution.
+            wf_ex = _get_workflow_execution(exec_id, must_exist=False)
+            if wf_ex:
+                return resources.Execution.from_db_model(wf_ex)
+
+        source_execution_id = exec_dict.get('source_execution_id')
+
+        source_exec_dict = None
+
+        if source_execution_id:
+            # If source execution is present we will perform a lookup for
+            # previous workflow execution model and the information to start
+            # a new workflow based on that information.
+            source_exec_dict = db_api.get_workflow_execution(
+                source_execution_id).to_dict()
+
+            exec_dict['description'] = "{} Based on the execution '{}'".format(
+                exec_dict['description'], source_execution_id)
+            exec_dict['description'] = exec_dict['description'].strip()
+
+        result_exec_dict = merge_dicts(source_exec_dict, exec_dict)
+
+        if not (result_exec_dict.get('workflow_id') or
+                result_exec_dict.get('workflow_name')):
             raise exc.WorkflowException(
                 "Workflow ID or workflow name must be provided. Workflow ID is"
                 " recommended."
             )
 
+        engine = rpc.get_engine_client()
+
         result = engine.start_workflow(
-            exec_dict.get('workflow_id', exec_dict.get('workflow_name')),
-            exec_dict.get('workflow_namespace', ''),
-            exec_dict.get('input'),
-            exec_dict.get('description', ''),
-            **exec_dict.get('params') or {}
+            result_exec_dict.get('workflow_id',
+                                 result_exec_dict.get('workflow_name')),
+            result_exec_dict.get('workflow_namespace', ''),
+            result_exec_dict.get('id'),
+            result_exec_dict.get('input'),
+            description=result_exec_dict.get('description', ''),
+            **result_exec_dict.get('params', {})
         )
 
         return resources.Execution.from_dict(result)
 
     @rest_utils.wrap_wsme_controller_exception
-    @wsme_pecan.wsexpose(None, wtypes.text, status_code=204)
-    def delete(self, id):
+    @wsme_pecan.wsexpose(None, wtypes.text, bool, status_code=204)
+    def delete(self, id, force=False):
         """Delete the specified Execution.
 
         :param id: UUID of execution to delete.
+        :param force: Optional. Force the deletion of unfinished executions.
+                      Default: false. While the api is backward compatible
+                      the behaviour is not the same. The new default is the
+                      safer option
         """
         acl.enforce('executions:delete', context.ctx())
 
         LOG.debug("Delete execution [id=%s]", id)
 
-        return db_api.delete_workflow_execution(id)
+        if not force:
+            state = db_api.get_workflow_execution(
+                id,
+                fields=(db_models.WorkflowExecution.state,)
+            )[0]
+
+            if not states.is_completed(state):
+                raise exc.NotAllowedException(
+                    "Only completed executions can be deleted. "
+                    "Use --force to override this. "
+                    "Execution {} is in {} state".format(id, state)
+                )
+
+        return rest_utils.rest_retry_on_db_error(
+            db_api.delete_workflow_execution
+        )(id)
 
     @rest_utils.wrap_wsme_controller_exception
     @wsme_pecan.wsexpose(resources.Executions, types.uuid, int,
@@ -329,7 +396,7 @@ class ExecutionsController(rest.RestController):
         )
 
         if include_output:
-            resource_function = _get_execution_resource
+            resource_function = _get_workflow_execution_resource
         else:
             resource_function = None
 

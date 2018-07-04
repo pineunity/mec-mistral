@@ -26,7 +26,7 @@ from mistral.workflow import states
 
 def _run_at_target(action_ex_id, action_class_str, attributes,
                    action_params, safe_rerun, execution_context, target=None,
-                   async_=True):
+                   async_=True, timeout=None):
     # We'll just call executor directly for testing purposes.
     executor = d_exe.DefaultExecutor()
 
@@ -74,7 +74,7 @@ class TestSafeRerun(base.EngineTestCase):
         # to true.
 
         wf_service.create_workflows(wf_text)
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -120,7 +120,7 @@ class TestSafeRerun(base.EngineTestCase):
         # to true.
 
         wf_service.create_workflows(wf_text)
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -155,7 +155,7 @@ class TestSafeRerun(base.EngineTestCase):
         """
 
         wf_service.create_workflows(wf_text)
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -176,3 +176,68 @@ class TestSafeRerun(base.EngineTestCase):
         self.assertIn(1, result)
         self.assertIn(2, result)
         self.assertIn(3, result)
+
+    @mock.patch.object(r_exe.RemoteExecutor, 'run_action', MOCK_RUN_AT_TARGET)
+    def test_safe_rerun_in_task_defaults(self):
+        wf_text = """---
+            version: '2.0'
+
+            wf:
+              task-defaults:
+                safe-rerun: true
+              tasks:
+                task1:
+                  safe-rerun: false
+                  on-error:
+                    - task2
+
+                task2:
+                  action: std.noop
+            """
+
+        wf_service.create_workflows(wf_text)
+
+        wf_ex = self.engine.start_workflow('wf')
+
+        self.await_workflow_success(wf_ex.id)
+
+        with db_api.transaction():
+            wf_ex = db_api.get_workflow_execution(wf_ex.id)
+
+            tasks = wf_ex.task_executions
+
+        self.assertEqual(len(tasks), 2)
+
+        task1 = self._assert_single_item(tasks, name='task1')
+        task2 = self._assert_single_item(tasks, name='task2')
+
+        self.assertEqual(task1.state, states.ERROR)
+        self.assertEqual(task2.state, states.SUCCESS)
+
+    @mock.patch.object(r_exe.RemoteExecutor, 'run_action', MOCK_RUN_AT_TARGET)
+    def test_default_value_of_safe_rerun(self):
+        wf_text = """---
+            version: '2.0'
+
+            wf:
+              tasks:
+                task1:
+                  action: std.noop
+            """
+
+        wf_service.create_workflows(wf_text)
+
+        wf_ex = self.engine.start_workflow('wf')
+
+        self.await_workflow_error(wf_ex.id)
+
+        with db_api.transaction():
+            wf_ex = db_api.get_workflow_execution(wf_ex.id)
+
+            tasks = wf_ex.task_executions
+
+        self.assertEqual(len(tasks), 1)
+
+        task1 = self._assert_single_item(tasks, name='task1')
+
+        self.assertEqual(task1.state, states.ERROR)

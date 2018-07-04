@@ -80,8 +80,7 @@ workflows:
 
 def _run_at_target(action_ex_id, action_cls_str, action_cls_attrs,
                    params, safe_rerun, execution_context, target=None,
-                   async_=True):
-
+                   async_=True, timeout=None):
     # We'll just call executor directly for testing purposes.
     executor = d_exe.DefaultExecutor()
 
@@ -91,7 +90,10 @@ def _run_at_target(action_ex_id, action_cls_str, action_cls_attrs,
         action_cls_attrs,
         params,
         safe_rerun,
-        execution_context=execution_context
+        execution_context=execution_context,
+        target=target,
+        async_=async_,
+        timeout=timeout
     )
 
 
@@ -106,12 +108,11 @@ class EnvironmentTest(base.EngineTestCase):
 
     @mock.patch.object(r_exe.RemoteExecutor, 'run_action', MOCK_RUN_AT_TARGET)
     def _test_subworkflow(self, env):
-        wf2_ex = self.engine.start_workflow('my_wb.wf2', '', {}, env=env)
+        wf2_ex = self.engine.start_workflow('my_wb.wf2', env=env)
 
         # Execution of 'wf2'.
         self.assertIsNotNone(wf2_ex)
         self.assertDictEqual({}, wf2_ex.input)
-        self.assertDictContainsSubset({'env': env}, wf2_ex.params)
 
         self._await(lambda: len(db_api.get_workflow_executions()) == 2, 0.5, 5)
 
@@ -124,19 +125,12 @@ class EnvironmentTest(base.EngineTestCase):
         wf2_ex = self._assert_single_item(wf_execs, name='my_wb.wf2')
         wf1_ex = self._assert_single_item(wf_execs, name='my_wb.wf1')
 
-        expected_start_params = {
-            'task_name': 'task2',
-            'task_execution_id': wf1_ex.task_execution_id,
-            'env': env
-        }
-
         expected_wf1_input = {
             'param1': 'Bonnie',
             'param2': 'Clyde'
         }
 
         self.assertIsNotNone(wf1_ex.task_execution_id)
-        self.assertDictContainsSubset(expected_start_params, wf1_ex.params)
         self.assertDictEqual(wf1_ex.input, expected_wf1_input)
 
         # Wait till workflow 'wf1' is completed.
@@ -182,13 +176,14 @@ class EnvironmentTest(base.EngineTestCase):
                     a_ex.input,
                     False,
                     {
-                        'task_id': t_ex.id,
+                        'task_execution_id': t_ex.id,
                         'callback_url': callback_url,
                         'workflow_execution_id': wf1_ex.id,
                         'workflow_name': wf1_ex.name,
                         'action_execution_id': a_ex.id,
                     },
-                    target=TARGET
+                    target=TARGET,
+                    timeout=None
                 )
 
     def test_subworkflow_env_task_input(self):
@@ -236,8 +231,6 @@ class EnvironmentTest(base.EngineTestCase):
 
         wf_ex = self.engine.start_workflow(
             'wf',
-            '',
-            {},
             env=env,
             evaluate_env=True
         )
@@ -261,8 +254,6 @@ class EnvironmentTest(base.EngineTestCase):
 
         wf_ex = self.engine.start_workflow(
             'wf',
-            '',
-            {},
             env=env,
             evaluate_env=False
         )
@@ -310,8 +301,6 @@ class EnvironmentTest(base.EngineTestCase):
 
         parent_wf_ex = self.engine.start_workflow(
             'parent_wf',
-            '',
-            {},
             env=env,
             evaluate_env=False
         )
@@ -343,8 +332,6 @@ class EnvironmentTest(base.EngineTestCase):
 
         parent_wf_ex = self.engine.start_workflow(
             'parent_wf',
-            '',
-            {},
             env=env,
             evaluate_env=True
         )
@@ -369,3 +356,96 @@ class EnvironmentTest(base.EngineTestCase):
                 },
                 sub_wf_ex.output
             )
+
+    def test_env_not_copied_to_context(self):
+        wf_text = """---
+        version: '2.0'
+
+        wf:
+          tasks:
+            task1:
+              action: std.echo output="<% env().param1 %>"
+              publish:
+                result: <% task().result %>
+        """
+
+        wf_service.create_workflows(wf_text)
+
+        env = {
+            'param1': 'val1',
+            'param2': 'val2',
+            'param3': 'val3'
+        }
+
+        wf_ex = self.engine.start_workflow('wf', env=env)
+
+        self.await_workflow_success(wf_ex.id)
+
+        with db_api.transaction():
+            wf_ex = db_api.get_workflow_execution(wf_ex.id)
+
+            t = self._assert_single_item(
+                wf_ex.task_executions,
+                name='task1'
+            )
+
+        self.assertDictEqual({'result': 'val1'}, t.published)
+
+        self.assertNotIn('__env', wf_ex.context)
+
+    def test_subworkflow_env_no_duplicate(self):
+        wf_text = """---
+        version: '2.0'
+
+        parent_wf:
+          tasks:
+            task1:
+              workflow: sub_wf
+
+        sub_wf:
+          output:
+            result: <% $.result %>
+
+          tasks:
+            task1:
+              action: std.noop
+              publish:
+                result: <% env().param1 %>
+        """
+
+        wf_service.create_workflows(wf_text)
+
+        env = {
+            'param1': 'val1',
+            'param2': 'val2',
+            'param3': 'val3'
+        }
+
+        parent_wf_ex = self.engine.start_workflow('parent_wf', env=env)
+
+        self.await_workflow_success(parent_wf_ex.id)
+
+        with db_api.transaction():
+            parent_wf_ex = db_api.get_workflow_execution(parent_wf_ex.id)
+
+            t = self._assert_single_item(
+                parent_wf_ex.task_executions,
+                name='task1'
+            )
+
+            sub_wf_ex = db_api.get_workflow_executions(
+                task_execution_id=t.id
+            )[0]
+
+            self.assertDictEqual(
+                {
+                    "result": "val1"
+                },
+                sub_wf_ex.output
+            )
+
+        # The environment of the subworkflow must be empty.
+        # To evaluate expressions it should be taken from the
+        # parent workflow execution.
+        self.assertDictEqual({}, sub_wf_ex.params['env'])
+        self.assertNotIn('__env', sub_wf_ex.context)

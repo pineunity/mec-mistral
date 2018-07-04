@@ -16,8 +16,10 @@ from oslo_config import cfg
 import testtools
 
 from mistral.db.v2 import api as db_api
+from mistral.lang.v2 import tasks as tasks_lang
 from mistral.services import workflows as wf_service
 from mistral.tests.unit.engine import base
+from mistral import utils
 from mistral.workflow import states
 
 
@@ -47,7 +49,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -95,7 +97,7 @@ class JoinEngineTest(base.EngineTestCase):
         wf_service.create_workflows(wf_text)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -148,7 +150,7 @@ class JoinEngineTest(base.EngineTestCase):
         wf_service.create_workflows(wf_text)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -209,7 +211,7 @@ class JoinEngineTest(base.EngineTestCase):
         wf_service.create_workflows(wf_text)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         def _num_of_tasks():
             return len(
@@ -290,7 +292,7 @@ class JoinEngineTest(base.EngineTestCase):
         wf_service.create_workflows(wf_text)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -372,7 +374,7 @@ class JoinEngineTest(base.EngineTestCase):
         wf_service.create_workflows(wf_text)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -449,7 +451,7 @@ class JoinEngineTest(base.EngineTestCase):
         wf_service.create_workflows(wf_text)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -531,7 +533,7 @@ class JoinEngineTest(base.EngineTestCase):
         wf_service.create_workflows(wfs_tasks_join_complex)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('main', '', {})
+        wf_ex = self.engine.start_workflow('main')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -596,7 +598,7 @@ class JoinEngineTest(base.EngineTestCase):
         wf_service.create_workflows(wf_text)
 
         # Start workflow.
-        wf_ex = self.engine.start_workflow('main', '', {})
+        wf_ex = self.engine.start_workflow('main')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -655,7 +657,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('main', '', {})
+        wf_ex = self.engine.start_workflow('main')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -709,7 +711,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('test-join', '', {})
+        wf_ex = self.engine.start_workflow('test-join')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -741,7 +743,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -785,7 +787,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -818,7 +820,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -851,7 +853,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         tasks = db_api.get_task_executions(workflow_execution_id=wf_ex.id)
 
@@ -909,7 +911,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         tasks = db_api.get_task_executions(workflow_execution_id=wf_ex.id)
 
@@ -975,7 +977,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -1037,7 +1039,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -1061,7 +1063,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -1119,7 +1121,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -1195,7 +1197,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(wf_text)
 
-        wf_ex = self.engine.start_workflow('wf', '', {})
+        wf_ex = self.engine.start_workflow('wf')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -1256,7 +1258,7 @@ class JoinEngineTest(base.EngineTestCase):
 
         wf_service.create_workflows(workflow)
 
-        wf_ex = self.engine.start_workflow('test_workflow', '', {})
+        wf_ex = self.engine.start_workflow('test_workflow')
 
         self.await_workflow_success(wf_ex.id)
 
@@ -1269,3 +1271,40 @@ class JoinEngineTest(base.EngineTestCase):
 
                 self.assertEqual(task.name, task_result,
                                  "The result of task must equal own name")
+
+    def test_join_with_long_name(self):
+        long_task_name = utils.generate_string(
+            tasks_lang.MAX_LENGTH_JOIN_TASK_NAME
+        )
+        wf_text = """---
+        version: '2.0'
+
+        wf:
+          tasks:
+            task1:
+              on-success:
+                - {0}
+
+            task2:
+              on-success:
+                - {0}
+
+            {0}:
+              join: all
+        """.format(long_task_name)
+
+        wf_service.create_workflows(wf_text)
+        wf_ex = self.engine.start_workflow('wf')
+        self.await_workflow_success(wf_ex.id)
+
+        with db_api.transaction():
+            wf_ex = db_api.get_workflow_execution(wf_ex.id)
+            tasks = wf_ex.task_executions
+
+        task1 = self._assert_single_item(tasks, name='task1')
+        task2 = self._assert_single_item(tasks, name='task2')
+        task3 = self._assert_single_item(tasks, name=long_task_name)
+
+        self.assertEqual(states.SUCCESS, task1.state)
+        self.assertEqual(states.SUCCESS, task2.state)
+        self.assertEqual(states.SUCCESS, task3.state)

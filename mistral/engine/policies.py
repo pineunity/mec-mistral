@@ -28,6 +28,9 @@ import six
 
 _CONTINUE_TASK_PATH = 'mistral.engine.policies._continue_task'
 _COMPLETE_TASK_PATH = 'mistral.engine.policies._complete_task'
+_FAIL_IF_INCOMPLETE_TASK_PATH = (
+    'mistral.engine.policies._fail_task_if_incomplete'
+)
 
 
 def _log_task_delay(task_ex, delay_sec):
@@ -257,9 +260,9 @@ class WaitAfterPolicy(base.TaskPolicy):
         end_state = task_ex.state
         end_state_info = task_ex.state_info
 
-        # TODO(rakhmerov): Policies probably needs to have tasks.Task
-        # interface in order to change manage task state safely.
-        # Set task state to 'DELAYED'.
+        # TODO(rakhmerov): Policies probably need to have tasks.Task
+        # interface in order to manage task state safely.
+        # Set task state to 'RUNNING_DELAYED'.
         task_ex.state = states.RUNNING_DELAYED
         task_ex.state_info = (
             'Suspended by wait-after policy for %s seconds' % self.delay
@@ -293,7 +296,7 @@ class RetryPolicy(base.TaskPolicy):
     def __init__(self, count, delay, break_on, continue_on):
         self.count = count
         self.delay = delay
-        self.break_on = break_on
+        self._break_on_clause = break_on
         self._continue_on_clause = continue_on
 
     def after_task_complete(self, task_ex, task_spec):
@@ -335,6 +338,7 @@ class RetryPolicy(base.TaskPolicy):
         wf_ex = task_ex.workflow_execution
 
         ctx_view = data_flow.ContextView(
+            data_flow.get_current_task_dict(task_ex),
             data_flow.evaluate_task_outbound_context(task_ex),
             wf_ex.context,
             wf_ex.input
@@ -342,6 +346,11 @@ class RetryPolicy(base.TaskPolicy):
 
         continue_on_evaluation = expressions.evaluate(
             self._continue_on_clause,
+            ctx_view
+        )
+
+        break_on_evaluation = expressions.evaluate(
+            self._break_on_clause,
             ctx_view
         )
 
@@ -374,7 +383,7 @@ class RetryPolicy(base.TaskPolicy):
 
         break_triggered = (
             task_ex.state == states.ERROR and
-            self.break_on
+            break_on_evaluation
         )
 
         if not retries_remain or break_triggered or stop_continue_flag:
@@ -383,6 +392,7 @@ class RetryPolicy(base.TaskPolicy):
         _log_task_delay(task_ex, self.delay)
 
         data_flow.invalidate_task_execution_result(task_ex)
+
         task_ex.state = states.RUNNING_DELAYED
 
         policy_context['retry_no'] = retry_no + 1
@@ -418,7 +428,7 @@ class TimeoutPolicy(base.TaskPolicy):
 
         scheduler.schedule_call(
             None,
-            'mistral.engine.policies._fail_task_if_incomplete',
+            _FAIL_IF_INCOMPLETE_TASK_PATH,
             self.delay,
             task_ex_id=task_ex.id,
             timeout=self.delay
@@ -491,7 +501,7 @@ class ConcurrencyPolicy(base.TaskPolicy):
         task_ex.runtime_context = runtime_context
 
 
-@db_utils.retry_on_deadlock
+@db_utils.retry_on_db_error
 @action_queue.process
 def _continue_task(task_ex_id):
     from mistral.engine import task_handler
@@ -500,7 +510,7 @@ def _continue_task(task_ex_id):
         task_handler.continue_task(db_api.get_task_execution(task_ex_id))
 
 
-@db_utils.retry_on_deadlock
+@db_utils.retry_on_db_error
 @action_queue.process
 def _complete_task(task_ex_id, state, state_info):
     from mistral.engine import task_handler
@@ -513,7 +523,7 @@ def _complete_task(task_ex_id, state, state_info):
         )
 
 
-@db_utils.retry_on_deadlock
+@db_utils.retry_on_db_error
 @action_queue.process
 def _fail_task_if_incomplete(task_ex_id, timeout):
     from mistral.engine import task_handler

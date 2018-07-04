@@ -1,5 +1,6 @@
 # Copyright 2016 - Nokia Networks.
 # Copyright 2016 - Brocade Communications Systems, Inc.
+# Copyright 2018 - Extreme Networks, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -14,6 +15,7 @@
 #    limitations under the License.
 
 import abc
+import json
 from oslo_config import cfg
 from oslo_log import log as logging
 from osprofiler import profiler
@@ -25,7 +27,10 @@ from mistral.engine import action_queue
 from mistral.engine import dispatcher
 from mistral.engine import utils as engine_utils
 from mistral import exceptions as exc
+from mistral import expressions as expr
 from mistral.lang import parser as spec_parser
+from mistral.notifiers import base as notif
+from mistral.notifiers import notification_events as events
 from mistral.services import triggers
 from mistral.services import workflows as wf_service
 from mistral import utils
@@ -61,14 +66,33 @@ class Workflow(object):
         else:
             self.wf_spec = None
 
+    def notify(self, event):
+        publishers = self.wf_ex.params.get('notify')
+
+        if not publishers and not isinstance(publishers, list):
+            return
+
+        notifier = notif.get_notifier(cfg.CONF.notifier.type)
+
+        notifier.notify(
+            self.wf_ex.id,
+            self.wf_ex.to_dict(),
+            event,
+            self.wf_ex.updated_at,
+            publishers
+        )
+
     @profiler.trace('workflow-start')
-    def start(self, wf_def, input_dict, desc='', params=None):
+    def start(self, wf_def, wf_ex_id, input_dict, desc='', params=None):
         """Start workflow.
 
         :param wf_def: Workflow definition.
+        :param wf_ex_id: Workflow execution id.
         :param input_dict: Workflow input.
         :param desc: Workflow execution description.
         :param params: Workflow type specific parameters.
+
+        :raises
         """
 
         assert not self.wf_ex
@@ -89,12 +113,16 @@ class Workflow(object):
 
         self._create_execution(
             wf_def,
+            wf_ex_id,
             self.prepare_input(input_dict),
             desc,
             params
         )
 
         self.set_state(states.RUNNING)
+
+        # Publish event as soon as state is set to running.
+        self.notify(events.WORKFLOW_LAUNCHED)
 
         wf_ctrl = wf_base.get_controller(self.wf_ex, self.wf_spec)
 
@@ -109,7 +137,6 @@ class Workflow(object):
         :param state: New workflow state.
         :param msg: Additional explaining message.
         """
-
         assert self.wf_ex
 
         if state == states.SUCCESS:
@@ -133,14 +160,15 @@ class Workflow(object):
         # Set the state of this workflow to paused.
         self.set_state(states.PAUSED, state_info=msg)
 
+        # Publish event.
+        self.notify(events.WORKFLOW_PAUSED)
+
         # If workflow execution is a subworkflow,
         # schedule update to the task execution.
         if self.wf_ex.task_execution_id:
             # Import the task_handler module here to avoid circular reference.
             from mistral.engine import task_handler
             task_handler.schedule_on_action_update(self.wf_ex)
-
-        return
 
     def resume(self, env=None):
         """Resume workflow.
@@ -154,6 +182,9 @@ class Workflow(object):
 
         self.set_state(states.RUNNING)
 
+        # Publish event.
+        self.notify(events.WORKFLOW_RESUMED)
+
         wf_ctrl = wf_base.get_controller(self.wf_ex)
 
         # Calculate commands to process next.
@@ -166,6 +197,7 @@ class Workflow(object):
         if self.wf_ex.task_execution_id:
             # Import the task_handler module here to avoid circular reference.
             from mistral.engine import task_handler
+
             task_handler.schedule_on_action_update(self.wf_ex)
 
     def prepare_input(self, input_dict):
@@ -210,6 +242,9 @@ class Workflow(object):
 
         self._continue_workflow(cmds)
 
+    def _get_backlog(self):
+        return self.wf_ex.runtime_context.get(dispatcher.BACKLOG_KEY)
+
     def _continue_workflow(self, cmds):
         # When resuming a workflow we need to ignore all 'pause'
         # commands because workflow controller takes tasks that
@@ -226,7 +261,7 @@ class Workflow(object):
             if states.is_completed(t_ex.state) and not t_ex.processed:
                 t_ex.processed = True
 
-        if cmds:
+        if cmds or self._get_backlog():
             dispatcher.dispatch_workflow_commands(self.wf_ex, cmds)
         else:
             self.check_and_complete()
@@ -238,10 +273,12 @@ class Workflow(object):
         return db_api.acquire_lock(db_models.WorkflowExecution, self.wf_ex.id)
 
     def _get_final_context(self):
+        final_ctx = {}
+
         wf_ctrl = wf_base.get_controller(self.wf_ex)
-        final_context = {}
+
         try:
-            final_context = wf_ctrl.evaluate_workflow_final_context()
+            final_ctx = wf_ctrl.evaluate_workflow_final_context()
         except Exception as e:
             LOG.warning(
                 'Failed to get final context for workflow execution. '
@@ -251,10 +288,11 @@ class Workflow(object):
                 str(e)
             )
 
-        return final_context
+        return final_ctx
 
-    def _create_execution(self, wf_def, input_dict, desc, params):
+    def _create_execution(self, wf_def, wf_ex_id, input_dict, desc, params):
         self.wf_ex = db_api.create_workflow_execution({
+            'id': wf_ex_id,
             'name': wf_def.name,
             'description': desc,
             'workflow_name': wf_def.name,
@@ -272,16 +310,12 @@ class Workflow(object):
 
         self.wf_ex.input = input_dict or {}
 
-        env = _get_environment(params)
-
-        if env:
-            params['env'] = env
+        params['env'] = _get_environment(params)
 
         self.wf_ex.params = params
 
         data_flow.add_openstack_data_to_context(self.wf_ex)
         data_flow.add_execution_to_context(self.wf_ex)
-        data_flow.add_environment_to_context(self.wf_ex)
         data_flow.add_workflow_variables_to_context(self.wf_ex, self.wf_spec)
 
         spec_parser.cache_workflow_spec_by_execution_id(
@@ -307,12 +341,16 @@ class Workflow(object):
                 return
 
             self.wf_ex = wf_ex
-            self.wf_ex.state_info = state_info
+            self.wf_ex.state_info = json.dumps(state_info) \
+                if isinstance(state_info, dict) else state_info
 
             wf_trace.info(
                 self.wf_ex,
-                "Workflow '%s' [%s -> %s, msg=%s]"
-                % (self.wf_ex.workflow_name, cur_state, state, state_info)
+                "Workflow '%s' [%s -> %s, msg=%s]" %
+                (self.wf_ex.workflow_name,
+                 cur_state,
+                 state,
+                 self.wf_ex.state_info)
             )
         else:
             msg = ("Can't change workflow execution state from %s to %s. "
@@ -398,6 +436,9 @@ class Workflow(object):
         # Set workflow execution to success until after output is evaluated.
         self.set_state(states.SUCCESS, msg)
 
+        # Publish event.
+        self.notify(events.WORKFLOW_SUCCEEDED)
+
         if self.wf_ex.task_execution_id:
             self._send_result_to_parent_workflow()
 
@@ -425,12 +466,26 @@ class Workflow(object):
 
         # When we set an ERROR state we should safely set output value getting
         # w/o exceptions due to field size limitations.
-        msg = utils.cut_by_kb(
-            msg,
-            cfg.CONF.engine.execution_field_size_limit_kb
-        )
+
+        length_output_on_error = len(str(output_on_error).encode("utf-8"))
+        total_output_length = utils.get_number_of_chars_from_kilobytes(
+            cfg.CONF.engine.execution_field_size_limit_kb)
+
+        if length_output_on_error < total_output_length:
+            msg = utils.cut_by_char(
+                msg,
+                total_output_length - length_output_on_error
+            )
+        else:
+            msg = utils.cut_by_kb(
+                msg,
+                cfg.CONF.engine.execution_field_size_limit_kb
+            )
 
         self.wf_ex.output = merge_dicts({'result': msg}, output_on_error)
+
+        # Publish event.
+        self.notify(events.WORKFLOW_FAILED)
 
         if self.wf_ex.task_execution_id:
             self._send_result_to_parent_workflow()
@@ -449,6 +504,9 @@ class Workflow(object):
         )
 
         self.wf_ex.output = {'result': msg}
+
+        # Publish event.
+        self.notify(events.WORKFLOW_CANCELLED)
 
         if self.wf_ex.task_execution_id:
             self._send_result_to_parent_workflow()
@@ -486,10 +544,12 @@ class Workflow(object):
 def _get_environment(params):
     env = params.get('env', {})
 
-    if isinstance(env, dict):
-        return env
+    if not env:
+        return {}
 
-    if isinstance(env, six.string_types):
+    if isinstance(env, dict):
+        env_dict = env
+    elif isinstance(env, six.string_types):
         env_db = db_api.load_environment(env)
 
         if not env_db:
@@ -497,12 +557,18 @@ def _get_environment(params):
                 'Environment is not found: %s' % env
             )
 
-        return env_db.variables
+        env_dict = env_db.variables
+    else:
+        raise exc.InputException(
+            'Unexpected value type for environment [env=%s, type=%s]'
+            % (env, type(env))
+        )
 
-    raise exc.InputException(
-        'Unexpected value type for environment [env=%s, type=%s]'
-        % (env, type(env))
-    )
+    if ('evaluate_env' in params and
+            not params['evaluate_env']):
+        return env_dict
+    else:
+        return expr.evaluate_recursively(env_dict, {'__env': env_dict})
 
 
 def _build_fail_info_message(wf_ctrl, wf_ex):

@@ -18,9 +18,11 @@ from mistral import config as cfg
 from mistral.executors import default_executor as exe
 from mistral.rpc import base as rpc
 from mistral.service import base as service_base
+from mistral.services import action_execution_reporter
 from mistral import utils
 from mistral.utils import profiler as profiler_utils
 
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -37,9 +39,14 @@ class ExecutorServer(service_base.MistralService):
 
         self.executor = executor
         self._rpc_server = None
+        self._reporter = None
+        self._aer = None
 
     def start(self):
         super(ExecutorServer, self).start()
+
+        self._aer = action_execution_reporter.ActionExecutionReporter(CONF)
+        self._reporter = action_execution_reporter.setup(self._aer)
 
         if self._setup_profiler:
             profiler_utils.setup('mistral-executor', cfg.CONF.executor.host)
@@ -56,13 +63,21 @@ class ExecutorServer(service_base.MistralService):
     def stop(self, graceful=False):
         super(ExecutorServer, self).stop(graceful)
 
+        if self._reporter:
+            self._reporter.stop(graceful)
+
         if self._rpc_server:
             self._rpc_server.stop(graceful)
 
     def run_action(self, rpc_ctx, action_ex_id, action_cls_str,
-                   action_cls_attrs, params, safe_rerun, execution_context):
+                   action_cls_attrs, params, safe_rerun, execution_context,
+                   timeout):
         """Receives calls over RPC to run action on executor.
 
+        :param timeout: a period of time in seconds after which execution of
+            action will be interrupted
+        :param execution_context: A dict of values providing information about
+            the current execution.
         :param rpc_ctx: RPC request context dictionary.
         :param action_ex_id: Action execution id.
         :param action_cls_str: Action class name.
@@ -74,24 +89,32 @@ class ExecutorServer(service_base.MistralService):
 
         LOG.info(
             "Received RPC request 'run_action'[action_ex_id=%s, "
-            "action_cls_str=%s, action_cls_attrs=%s, params=%s]",
+            "action_cls_str=%s, action_cls_attrs=%s, params=%s, "
+            "timeout=%s]",
             action_ex_id,
             action_cls_str,
             action_cls_attrs,
-            utils.cut(params)
+            utils.cut(params),
+            timeout
         )
 
         redelivered = rpc_ctx.redelivered or False
 
-        return self.executor.run_action(
-            action_ex_id,
-            action_cls_str,
-            action_cls_attrs,
-            params,
-            safe_rerun,
-            execution_context,
-            redelivered
-        )
+        try:
+            self._aer.add_action_ex_id(action_ex_id)
+
+            return self.executor.run_action(
+                action_ex_id,
+                action_cls_str,
+                action_cls_attrs,
+                params,
+                safe_rerun,
+                execution_context,
+                redelivered,
+                timeout=timeout
+            )
+        finally:
+            self._aer.remove_action_ex_id(action_ex_id)
 
 
 def get_oslo_service(setup_profiler=True):

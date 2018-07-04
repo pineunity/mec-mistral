@@ -26,6 +26,7 @@ from mistral.db.v2.sqlalchemy import models as db_models
 from mistral import exceptions as exc
 from mistral.services import security
 from mistral.tests.unit import base as test_base
+from mistral import utils
 from mistral.utils import filter_utils
 
 
@@ -50,7 +51,7 @@ WORKBOOKS = [
         'description': 'my description',
         'definition': 'empty',
         'spec': {},
-        'tags': ['mc'],
+        'tags': ['mc', 'hammer'],
         'scope': 'private',
         'updated_at': None,
         'project_id': '1233',
@@ -83,12 +84,28 @@ class WorkbookTest(SQLAlchemyTest):
 
         self.assertIsNone(db_api.load_workbook("not-existing-wb"))
 
+    def test_get_workbook_with_fields(self):
+        with db_api.transaction():
+            created = db_api.create_workbook(WORKBOOKS[0])
+
+            fetched = db_api.get_workbook(
+                created['name'],
+                fields=(db_models.Workbook.scope,)
+            )
+
+            self.assertNotEqual(created, fetched)
+            self.assertIsInstance(fetched, tuple)
+            self.assertEqual(1, len(fetched))
+            self.assertEqual(created.scope, fetched[0])
+
     def test_create_workbook_duplicate_without_auth(self):
         cfg.CONF.set_default('auth_enable', False, group='pecan')
         db_api.create_workbook(WORKBOOKS[0])
 
-        self.assertRaises(
+        self.assertRaisesWithMessage(
             exc.DBDuplicateEntryError,
+            "Duplicate entry for WorkbookDefinition ['name', 'project_id']:"
+            " my_workbook1, <default-project>",
             db_api.create_workbook,
             WORKBOOKS[0]
         )
@@ -284,6 +301,33 @@ class WorkbookTest(SQLAlchemyTest):
         self.assertEqual(1, len(fetched))
         self.assertEqual(created1, fetched[0])
 
+    def test_filter_workbooks_by_single_tags(self):
+        db_api.create_workbook(WORKBOOKS[0])
+        db_api.create_workbook(WORKBOOKS[1])
+
+        _filter = filter_utils.create_or_update_filter(
+            'tags',
+            "mc",
+            'eq'
+        )
+        fetched = db_api.get_workbooks(**_filter)
+
+        self.assertEqual(2, len(fetched))
+
+    def test_filter_workbooks_by_multiple_tags(self):
+        db_api.create_workbook(WORKBOOKS[0])
+        created1 = db_api.create_workbook(WORKBOOKS[1])
+
+        _filter = filter_utils.create_or_update_filter(
+            'tags',
+            "mc,hammer",
+            'eq'
+        )
+        fetched = db_api.get_workbooks(**_filter)
+
+        self.assertEqual(1, len(fetched))
+        self.assertEqual(created1, fetched[0])
+
     def test_delete_workbook(self):
         created = db_api.create_workbook(WORKBOOKS[0])
 
@@ -387,6 +431,17 @@ WF_DEFINITIONS = [
         'created_at': datetime.datetime(2016, 12, 1, 15, 1, 0),
         'namespace': ''
     },
+    {
+        'name': 'my_wf3',
+        'definition': 'empty',
+        'spec': {},
+        'tags': ['mc'],
+        'scope': 'private',
+        'project_id': '1233',
+        'trust_id': '12345',
+        'created_at': datetime.datetime(2016, 12, 1, 15, 1, 0),
+        'namespace': 'mynamespace'
+    },
 ]
 
 
@@ -397,7 +452,7 @@ CRON_TRIGGER = {
     'workflow_id': None,
     'workflow_input': {},
     'next_execution_time':
-    datetime.datetime.now() + datetime.timedelta(days=1),
+        datetime.datetime.now() + datetime.timedelta(days=1),
     'remaining_executions': 42,
     'scope': 'private',
     'project_id': '<default-project>'
@@ -417,6 +472,20 @@ class WorkflowDefinitionTest(SQLAlchemyTest):
         self.assertEqual(created, fetched)
 
         self.assertIsNone(db_api.load_workflow_definition("not-existing-wf"))
+
+    def test_get_workflow_definition_with_fields(self):
+        with db_api.transaction():
+            created = db_api.create_workflow_definition(WF_DEFINITIONS[0])
+
+            fetched = db_api.get_workflow_definition(
+                created.name,
+                fields=(db_models.WorkflowDefinition.scope,)
+            )
+
+            self.assertNotEqual(created, fetched)
+            self.assertIsInstance(fetched, tuple)
+            self.assertEqual(1, len(fetched))
+            self.assertEqual(created.scope, fetched[0])
 
     def test_get_workflow_definition_with_uuid(self):
         created = db_api.create_workflow_definition(WF_DEFINITIONS[0])
@@ -574,10 +643,24 @@ class WorkflowDefinitionTest(SQLAlchemyTest):
         cfg.CONF.set_default('auth_enable', False, group='pecan')
         db_api.create_workflow_definition(WF_DEFINITIONS[0])
 
-        self.assertRaises(
+        self.assertRaisesWithMessage(
             exc.DBDuplicateEntryError,
+            "Duplicate entry for WorkflowDefinition ['name', 'namespace',"
+            " 'project_id']: my_wf1, , <default-project>",
             db_api.create_workflow_definition,
             WF_DEFINITIONS[0]
+        )
+
+    def test_create_workflow_definition_duplicate_namespace_without_auth(self):
+        cfg.CONF.set_default('auth_enable', False, group='pecan')
+        db_api.create_workflow_definition(WF_DEFINITIONS[2])
+
+        self.assertRaisesWithMessage(
+            exc.DBDuplicateEntryError,
+            "Duplicate entry for WorkflowDefinition ['name', 'namespace',"
+            " 'project_id']: my_wf3, mynamespace, <default-project>",
+            db_api.create_workflow_definition,
+            WF_DEFINITIONS[2]
         )
 
     def test_update_workflow_definition(self):
@@ -951,6 +1034,20 @@ class ActionDefinitionTest(SQLAlchemyTest):
 
         self.assertIsNone(db_api.load_action_definition("not-existing-id"))
 
+    def test_get_action_definition_with_fields(self):
+        with db_api.transaction():
+            created = db_api.create_action_definition(ACTION_DEFINITIONS[0])
+
+            fetched = db_api.get_action_definition(
+                created.name,
+                fields=(db_models.ActionDefinition.scope,)
+            )
+
+            self.assertNotEqual(created, fetched)
+            self.assertIsInstance(fetched, tuple)
+            self.assertEqual(1, len(fetched))
+            self.assertEqual(created.scope, fetched[0])
+
     def test_get_action_definition_with_uuid(self):
         created = db_api.create_action_definition(ACTION_DEFINITIONS[0])
         fetched = db_api.get_action_definition(created.id)
@@ -961,8 +1058,10 @@ class ActionDefinitionTest(SQLAlchemyTest):
         cfg.CONF.set_default('auth_enable', False, group='pecan')
         db_api.create_action_definition(ACTION_DEFINITIONS[0])
 
-        self.assertRaises(
+        self.assertRaisesWithMessage(
             exc.DBDuplicateEntryError,
+            "Duplicate entry for Action ['name', 'project_id']: action1"
+            ", <default-project>",
             db_api.create_action_definition,
             ACTION_DEFINITIONS[0]
         )
@@ -1130,7 +1229,7 @@ class ActionDefinitionTest(SQLAlchemyTest):
         self.assertEqual(1, len(fetched))
         self.assertEqual(created3, fetched[0])
 
-        f = filter_utils.create_or_update_filter('name', "Action", 'has')
+        f = filter_utils.create_or_update_filter('name', "action", 'has')
 
         fetched = db_api.get_action_definitions(**f)
 
@@ -1285,6 +1384,20 @@ class ActionExecutionTest(SQLAlchemyTest):
             self.assertEqual(created, fetched)
 
         self.assertIsNone(db_api.load_action_execution("not-existing-id"))
+
+    def test_get_action_execution_with_fields(self):
+        with db_api.transaction():
+            created = db_api.create_action_execution(ACTION_EXECS[0])
+
+            fetched = db_api.get_action_execution(
+                created.id,
+                fields=(db_models.ActionExecution.name,)
+            )
+
+            self.assertNotEqual(created, fetched)
+            self.assertIsInstance(fetched, tuple)
+            self.assertEqual(1, len(fetched))
+            self.assertEqual(created.name, fetched[0])
 
     def test_update_action_execution(self):
         with db_api.transaction():
@@ -1446,6 +1559,20 @@ class WorkflowExecutionTest(SQLAlchemyTest):
             self.assertIsNone(
                 db_api.load_workflow_execution("not-existing-id")
             )
+
+    def test_get_workflow_execution_with_fields(self):
+        with db_api.transaction():
+            created = db_api.create_workflow_execution(WF_EXECS[0])
+
+            fetched = db_api.get_workflow_execution(
+                created.id,
+                fields=(db_models.WorkflowExecution.state,)
+            )
+
+            self.assertNotEqual(created, fetched)
+            self.assertIsInstance(fetched, tuple)
+            self.assertEqual(1, len(fetched))
+            self.assertEqual(created.state, fetched[0])
 
     def test_update_workflow_execution(self):
         with db_api.transaction():
@@ -1829,7 +1956,6 @@ TASK_EXECS = [
 
 
 class TaskExecutionTest(SQLAlchemyTest):
-
     def test_create_and_get_and_load_task_execution(self):
         with db_api.transaction():
             wf_ex = db_api.create_workflow_execution(WF_EXECS[0])
@@ -1850,6 +1976,25 @@ class TaskExecutionTest(SQLAlchemyTest):
             self.assertEqual(created, fetched)
 
             self.assertIsNone(db_api.load_task_execution("not-existing-id"))
+
+    def test_get_task_execution_with_fields(self):
+        with db_api.transaction():
+            wf_ex = db_api.create_workflow_execution(WF_EXECS[0])
+
+            values = copy.deepcopy(TASK_EXECS[0])
+            values.update({'workflow_execution_id': wf_ex.id})
+
+            created = db_api.create_task_execution(values)
+
+            fetched = db_api.get_task_execution(
+                created.id,
+                fields=(db_models.TaskExecution.name,)
+            )
+
+            self.assertNotEqual(created, fetched)
+            self.assertIsInstance(fetched, tuple)
+            self.assertEqual(1, len(fetched))
+            self.assertEqual(created.name, fetched[0])
 
     def test_action_executions(self):
         # Store one task with two invocations.
@@ -2197,7 +2342,8 @@ CRON_TRIGGERS = [
         'workflow_id': None,
         'workflow_input': {},
         'next_execution_time':
-        datetime.datetime.now() + datetime.timedelta(days=1),
+            utils.drop_microseconds(
+                datetime.datetime.now() + datetime.timedelta(days=1)),
         'remaining_executions': 42,
         'scope': 'private',
         'project_id': '<default-project>'
@@ -2210,7 +2356,8 @@ CRON_TRIGGERS = [
         'workflow_id': None,
         'workflow_input': {'param': 'val'},
         'next_execution_time':
-        datetime.datetime.now() + datetime.timedelta(days=1),
+            utils.drop_microseconds(
+                datetime.datetime.now() + datetime.timedelta(days=1)),
         'remaining_executions': 42,
         'scope': 'private',
         'project_id': '<default-project>'
@@ -2244,8 +2391,10 @@ class CronTriggerTest(SQLAlchemyTest):
         cfg.CONF.set_default('auth_enable', False, group='pecan')
         db_api.create_cron_trigger(CRON_TRIGGERS[0])
 
-        self.assertRaises(
+        self.assertRaisesWithMessage(
             exc.DBDuplicateEntryError,
+            "Duplicate entry for cron trigger ['name', 'project_id']:"
+            " trigger1, <default-project>",
             db_api.create_cron_trigger,
             CRON_TRIGGERS[0]
         )
@@ -2476,8 +2625,10 @@ class EnvironmentTest(SQLAlchemyTest):
         cfg.CONF.set_default('auth_enable', False, group='pecan')
         db_api.create_environment(ENVIRONMENTS[0])
 
-        self.assertRaises(
+        self.assertRaisesWithMessage(
             exc.DBDuplicateEntryError,
+            "Duplicate entry for Environment ['name', 'project_id']: "
+            "env1, None",
             db_api.create_environment,
             ENVIRONMENTS[0]
         )
@@ -2757,8 +2908,11 @@ class ResourceMemberTest(SQLAlchemyTest):
     def test_create_resource_member_duplicate(self):
         db_api.create_resource_member(RESOURCE_MEMBERS[0])
 
-        self.assertRaises(
+        self.assertRaisesWithMessage(
             exc.DBDuplicateEntryError,
+            "Duplicate entry for ResourceMember ['resource_id',"
+            " 'resource_type', 'member_id']:"
+            " 123e4567-e89b-12d3-a456-426655440000, workflow, 99-88-33",
             db_api.create_resource_member,
             RESOURCE_MEMBERS[0]
         )
@@ -3030,6 +3184,18 @@ class EventTriggerTest(SQLAlchemyTest):
 
         self.assertEqual(created, fetched)
 
+    def test_create_event_trigger_duplicate(self):
+        db_api.create_event_trigger(EVENT_TRIGGERS[0])
+
+        self.assertRaisesWithMessageContaining(
+            exc.DBDuplicateEntryError,
+            "Duplicate entry for EventTrigger ['exchange', 'topic', 'event',"
+            " 'workflow_id', 'project_id']: openstack, notification,"
+            " compute.create_instance,",
+            db_api.create_event_trigger,
+            EVENT_TRIGGERS[0]
+        )
+
     def test_get_event_triggers_not_insecure(self):
         for t in EVENT_TRIGGERS:
             db_api.create_event_trigger(t)
@@ -3052,6 +3218,12 @@ class EventTriggerTest(SQLAlchemyTest):
         fetched = db_api.get_event_triggers(insecure=True)
 
         self.assertEqual(2, len(fetched))
+
+    def test_get_event_triggers_specific_fields_insecure(self):
+        fetched = db_api.get_event_triggers(fields=['name', 'workflow_id'],
+                                            insecure=True)
+
+        self.assertEqual(0, len(fetched))
 
     def test_update_event_trigger(self):
         created = db_api.create_event_trigger(EVENT_TRIGGERS[0])

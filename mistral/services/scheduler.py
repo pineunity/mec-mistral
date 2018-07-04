@@ -102,12 +102,13 @@ def schedule_call(factory_method_path, target_method_name,
 
 
 class Scheduler(object):
-    def __init__(self):
+    def __init__(self, fixed_delay, random_delay, batch_size):
         self._stopped = False
         self._thread = threading.Thread(target=self._loop)
         self._thread.daemon = True
-        self._fixed_delay = CONF.scheduler.fixed_delay
-        self._random_delay = CONF.scheduler.random_delay
+        self._fixed_delay = fixed_delay
+        self._random_delay = random_delay
+        self._batch_size = batch_size
 
     def start(self):
         self._thread.start()
@@ -134,7 +135,8 @@ class Scheduler(object):
                 # the exception is not cleared from the context automatically.
                 # This results in subsequent log.warning calls to show invalid
                 # info.
-                sys.exc_clear()
+                if sys.version_info < (3,):
+                    sys.exc_clear()
 
             eventlet.sleep(
                 self._fixed_delay +
@@ -151,7 +153,7 @@ class Scheduler(object):
         """
 
         # Select and capture calls matching time criteria.
-        db_calls = self._capture_calls()
+        db_calls = self._capture_calls(self._batch_size)
 
         if not db_calls:
             return
@@ -166,8 +168,8 @@ class Scheduler(object):
         self.delete_calls(db_calls)
 
     @staticmethod
-    @db_utils.retry_on_deadlock
-    def _capture_calls():
+    @db_utils.retry_on_db_error
+    def _capture_calls(batch_size):
         """Captures delayed calls eligible for processing (based on time).
 
         The intention of this method is to select delayed calls based on time
@@ -181,7 +183,10 @@ class Scheduler(object):
         time_filter = datetime.datetime.now() + datetime.timedelta(seconds=1)
 
         with db_api.transaction():
-            candidates = db_api.get_delayed_calls_to_start(time_filter)
+            candidates = db_api.get_delayed_calls_to_start(
+                time_filter,
+                batch_size
+            )
 
             for call in candidates:
                 # Mark this delayed call has been processed in order to
@@ -280,7 +285,7 @@ class Scheduler(object):
                 context.set_ctx(None)
 
     @staticmethod
-    @db_utils.retry_on_deadlock
+    @db_utils.retry_on_db_error
     def delete_calls(db_calls):
         """Deletes delayed calls.
 
@@ -306,7 +311,11 @@ class Scheduler(object):
 
 
 def start():
-    sched = Scheduler()
+    sched = Scheduler(
+        CONF.scheduler.fixed_delay,
+        CONF.scheduler.random_delay,
+        CONF.scheduler.batch_size
+    )
 
     _schedulers.add(sched)
 

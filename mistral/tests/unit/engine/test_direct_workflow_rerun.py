@@ -224,7 +224,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(SIMPLE_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb1.wf1')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -326,7 +326,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         }
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {}, env=env)
+        wf_ex = self.engine.start_workflow('wb1.wf1', env=env)
 
         self.await_workflow_error(wf_ex.id)
 
@@ -338,7 +338,6 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         self.assertIsNotNone(wf_ex.state_info)
         self.assertEqual(3, len(task_execs))
         self.assertDictEqual(env, wf_ex.params['env'])
-        self.assertDictEqual(env, wf_ex.context['__env'])
 
         task_10_ex = self._assert_single_item(task_execs, name='t10')
         task_21_ex = self._assert_single_item(task_execs, name='t21')
@@ -362,7 +361,6 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         self.assertEqual(states.RUNNING, wf_ex.state)
         self.assertIsNone(wf_ex.state_info)
         self.assertDictEqual(updated_env, wf_ex.params['env'])
-        self.assertDictEqual(updated_env, wf_ex.context['__env'])
 
         # Await t30 success.
         self.await_task_success(task_30_ex.id)
@@ -472,7 +470,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(SIMPLE_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb1.wf1')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -526,7 +524,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(WITH_ITEMS_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb3.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb3.wf1')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -618,7 +616,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(WITH_ITEMS_WORKBOOK_CONCURRENCY)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb3.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb3.wf1')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -700,7 +698,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         env = {'var1': 'fee fi fo fum'}
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb3.wf1', '', {}, env=env)
+        wf_ex = self.engine.start_workflow('wb3.wf1', env=env)
 
         self.await_workflow_error(wf_ex.id)
 
@@ -806,7 +804,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(JOIN_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb1.wf1')
 
         wf_ex = db_api.get_workflow_execution(wf_ex.id)
 
@@ -879,7 +877,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         self.assertIsNone(task_3_ex.state_info)
 
         task_3_action_exs = db_api.get_action_executions(
-            task_execution_id=task_execs[2].id
+            task_execution_id=task_3_ex.id
         )
 
         self.assertEqual(2, len(task_3_action_exs))
@@ -905,7 +903,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(JOIN_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb1.wf1')
 
         with db_api.transaction():
             wf_ex = db_api.get_workflow_execution(wf_ex.id)
@@ -1026,7 +1024,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         self.assertEqual(states.SUCCESS, task_3_ex.state)
 
         task_3_action_exs = db_api.get_action_executions(
-            task_execution_id=task_execs[2].id
+            task_execution_id=task_3_ex.id
         )
 
         self.assertEqual(1, len(task_3_action_exs))
@@ -1057,7 +1055,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(WITH_ITEMS_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb3.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb3.wf1')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -1206,7 +1204,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(SUBFLOW_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb1.wf1')
 
         self.await_workflow_error(wf_ex.id)
 
@@ -1299,7 +1297,7 @@ class DirectWorkflowRerunTest(base.EngineTestCase):
         wb_service.create_workbook_v2(SUBFLOW_WORKBOOK)
 
         # Run workflow and fail task.
-        wf_ex = self.engine.start_workflow('wb1.wf1', '', {})
+        wf_ex = self.engine.start_workflow('wb1.wf1')
 
         self.await_workflow_error(wf_ex.id)
 

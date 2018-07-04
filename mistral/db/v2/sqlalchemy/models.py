@@ -13,16 +13,17 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+import datetime
 import hashlib
 import json
-import sqlalchemy as sa
-from sqlalchemy import event
-from sqlalchemy.orm import backref
-from sqlalchemy.orm import relationship
 import sys
 
 from oslo_config import cfg
 from oslo_log import log as logging
+import sqlalchemy as sa
+from sqlalchemy import event
+from sqlalchemy.orm import backref
+from sqlalchemy.orm import relationship
 
 from mistral.db.sqlalchemy import model_base as mb
 from mistral.db.sqlalchemy import types as st
@@ -33,6 +34,7 @@ from mistral import utils
 
 # Definition objects.
 
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -65,17 +67,19 @@ def validate_long_type_length(cls, field_name, value):
         size_kb = int(sys.getsizeof(str(value)) / 1024)
 
         if size_kb > size_limit_kb:
-            LOG.error(
-                "Size limit %dKB exceed for class [%s], "
-                "field %s of size %dKB.",
-                size_limit_kb, str(cls), field_name, size_kb
-            )
-
-            raise exc.SizeLimitExceededException(
+            msg = (
+                "Field size limit exceeded"
+                " [class={}, field={}, size={}KB, limit={}KB]"
+            ).format(
+                cls.__name__,
                 field_name,
                 size_kb,
                 size_limit_kb
             )
+
+            LOG.error(msg)
+
+            raise exc.SizeLimitExceededException(msg)
 
 
 def register_length_validator(attr_name):
@@ -193,6 +197,13 @@ class ActionExecution(Execution):
     accepted = sa.Column(sa.Boolean(), default=False)
     input = sa.Column(st.JsonLongDictType(), nullable=True)
     output = sa.orm.deferred(sa.Column(st.JsonLongDictType(), nullable=True))
+    last_heartbeat = sa.Column(
+        sa.DateTime,
+        default=lambda: utils.utc_now_sec() + datetime.timedelta(
+            seconds=CONF.action_heartbeat.first_heartbeat_timeout
+        )
+    )
+    is_sync = sa.Column(sa.Boolean(), default=None, nullable=True)
 
 
 class WorkflowExecution(Execution):
@@ -237,7 +248,7 @@ class TaskExecution(Execution):
 
     # Main properties.
     action_spec = sa.Column(st.JsonLongDictType())
-    unique_key = sa.Column(sa.String(250), nullable=True)
+    unique_key = sa.Column(sa.String(255), nullable=True)
     type = sa.Column(sa.String(10))
 
     # Whether the task is fully processed (publishing and calculating commands
@@ -288,7 +299,8 @@ TaskExecution.action_executions = relationship(
     backref=backref('task_execution', remote_side=[TaskExecution.id]),
     cascade='all, delete-orphan',
     foreign_keys=ActionExecution.task_execution_id,
-    lazy='select'
+    lazy='select',
+    passive_deletes=True
 )
 
 sa.Index(
@@ -309,7 +321,8 @@ TaskExecution.workflow_executions = relationship(
     backref=backref('task_execution', remote_side=[TaskExecution.id]),
     cascade='all, delete-orphan',
     foreign_keys=WorkflowExecution.task_execution_id,
-    lazy='select'
+    lazy='select',
+    passive_deletes=True
 )
 
 sa.Index(
@@ -337,7 +350,8 @@ WorkflowExecution.task_executions = relationship(
     backref=backref('workflow_execution', remote_side=[WorkflowExecution.id]),
     cascade='all, delete-orphan',
     foreign_keys=TaskExecution.workflow_execution_id,
-    lazy='select'
+    lazy='select',
+    passive_deletes=True
 )
 
 sa.Index(
@@ -550,7 +564,7 @@ class NamedLock(mb.MistralModelBase):
     sa.UniqueConstraint('name')
 
     id = mb.id_column()
-    name = sa.Column(sa.String(250))
+    name = sa.Column(sa.String(255))
 
 
 sa.UniqueConstraint(NamedLock.name)

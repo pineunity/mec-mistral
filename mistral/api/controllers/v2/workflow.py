@@ -116,15 +116,11 @@ class WorkflowsController(rest.RestController, hooks.HookController):
         definition = pecan.request.text
         scope = pecan.request.GET.get('scope', 'private')
 
-        if scope not in resources.SCOPE_TYPES.values:
-            raise exc.InvalidModelException(
-                "Scope must be one of the following: %s; actual: "
-                "%s" % (resources.SCOPE_TYPES.values, scope)
-            )
+        resources.Workflow.validate_scope(scope)
 
         LOG.debug("Update workflow(s) [definition=%s]", definition)
 
-        db_wfs = workflows.update_workflows(
+        db_wfs = rest_utils.rest_retry_on_db_error(workflows.update_workflows)(
             definition,
             scope=scope,
             identifier=identifier,
@@ -156,15 +152,11 @@ class WorkflowsController(rest.RestController, hooks.HookController):
         scope = pecan.request.GET.get('scope', 'private')
         pecan.response.status = 201
 
-        if scope not in resources.SCOPE_TYPES.values:
-            raise exc.InvalidModelException(
-                "Scope must be one of the following: %s; actual: "
-                "%s" % (resources.SCOPE_TYPES.values, scope)
-            )
+        resources.Workflow.validate_scope(scope)
 
         LOG.debug("Create workflow(s) [definition=%s]", definition)
 
-        db_wfs = workflows.create_workflows(
+        db_wfs = rest_utils.rest_retry_on_db_error(workflows.create_workflows)(
             definition,
             scope=scope,
             namespace=namespace
@@ -189,8 +181,12 @@ class WorkflowsController(rest.RestController, hooks.HookController):
         LOG.debug("Delete workflow [identifier=%s, namespace=%s]",
                   identifier, namespace)
 
-        with db_api.transaction():
-            db_api.delete_workflow_definition(identifier, namespace)
+        @rest_utils.rest_retry_on_db_error
+        def _delete_workflow_definition():
+            with db_api.transaction():
+                db_api.delete_workflow_definition(identifier, namespace)
+
+        _delete_workflow_definition()
 
     @rest_utils.wrap_wsme_controller_exception
     @wsme_pecan.wsexpose(resources.Workflows, types.uuid, int,

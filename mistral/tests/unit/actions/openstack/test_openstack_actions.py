@@ -16,6 +16,7 @@ import mock
 
 from mistral.actions.openstack import actions
 from oslo_config import cfg
+from oslo_utils import importutils
 from oslotest import base
 
 CONF = cfg.CONF
@@ -109,19 +110,6 @@ class OpenStackActionTest(base.BaseTestCase):
         self.assertTrue(mocked().volumes.get.called)
         mocked().volumes.get.assert_called_once_with(volume="1234-abcd")
 
-    @mock.patch.object(actions.CeilometerAction, '_get_client')
-    def test_ceilometer_action(self, mocked):
-        mock_ctx = mock.Mock()
-        method_name = "alarms.get"
-        action_class = actions.CeilometerAction
-        action_class.client_method_name = method_name
-        params = {'alarm_id': '1234-abcd'}
-        action = action_class(**params)
-        action.run(mock_ctx)
-
-        self.assertTrue(mocked().alarms.get.called)
-        mocked().alarms.get.assert_called_once_with(alarm_id="1234-abcd")
-
     @mock.patch.object(actions.TroveAction, '_get_client')
     def test_trove_action(self, mocked):
         mock_ctx = mock.Mock()
@@ -211,6 +199,18 @@ class OpenStackActionTest(base.BaseTestCase):
         self.assertTrue(mocked().get_object.called)
         mocked().get_object.assert_called_once_with(container='foo',
                                                     object='bar')
+
+    @mock.patch.object(actions.SwiftServiceAction, '_get_client')
+    def test_swift_service_action(self, mocked):
+        mock_ctx = mock.Mock()
+        method_name = "list"
+        action_class = actions.SwiftServiceAction
+        action_class.client_method_name = method_name
+        action = action_class()
+        action.run(mock_ctx)
+
+        self.assertTrue(mocked().list.called)
+        mocked().list.assert_called_once_with()
 
     @mock.patch.object(actions.ZaqarAction, '_get_client')
     def test_zaqar_action(self, mocked):
@@ -347,3 +347,52 @@ class OpenStackActionTest(base.BaseTestCase):
 
         self.assertTrue(mocked().artifacts.get.called)
         mocked().artifacts.get.assert_called_once_with(artifact_id="1234-abcd")
+
+    @mock.patch.object(actions.VitrageAction, '_get_client')
+    def test_vitrage_action(self, mocked):
+        mock_ctx = mock.Mock()
+        method_name = "alarm.get"
+        action_class = actions.VitrageAction
+        action_class.client_method_name = method_name
+        params = {'vitrage_id': '1234-abcd'}
+        action = action_class(**params)
+        action.run(mock_ctx)
+
+        self.assertTrue(mocked().alarm.get.called)
+        mocked().alarm.get.assert_called_once_with(vitrage_id="1234-abcd")
+
+    @mock.patch.object(actions.ZunAction, '_get_client')
+    def test_zun_action(self, mocked):
+        mock_ctx = mock.Mock()
+        method_name = "containers.get"
+        action_class = actions.ZunAction
+        action_class.client_method_name = method_name
+        params = {'container_id': '1234-abcd'}
+        action = action_class(**params)
+        action.run(mock_ctx)
+
+        self.assertTrue(mocked().containers.get.called)
+        mocked().containers.get.assert_called_once_with(
+            container_id="1234-abcd"
+        )
+
+    @mock.patch.object(actions.QinlingAction, '_get_client')
+    def test_qinling_action(self, mocked):
+        mock_ctx = mock.Mock()
+        method_name = "runtimes.get"
+        action_class = actions.QinlingAction
+        action_class.client_method_name = method_name
+        params = {'id': '1234-abcd'}
+        action = action_class(**params)
+        action.run(mock_ctx)
+
+        self.assertTrue(mocked().runtimes.get.called)
+        mocked().runtimes.get.assert_called_once_with(id="1234-abcd")
+
+
+class TestImport(base.BaseTestCase):
+    @mock.patch.object(importutils, 'try_import')
+    def test_try_import_fails(self, mocked):
+        mocked.side_effect = Exception('Exception when importing module')
+        bad_module = actions._try_import('raiser')
+        self.assertIsNone(bad_module)
