@@ -21,6 +21,7 @@ Configuration options registration and useful routines.
 import itertools
 import os
 
+from keystoneauth1 import loading
 from oslo_config import cfg
 from oslo_log import log
 from oslo_middleware import cors
@@ -109,6 +110,14 @@ rpc_response_timeout_opt = cfg.IntOpt(
     'rpc_response_timeout',
     default=60,
     help=_('Seconds to wait for a response from a call.')
+)
+
+oslo_rpc_executor = cfg.StrOpt(
+    'oslo_rpc_executor',
+    default='eventlet',
+    choices=['eventlet', 'blocking', 'threading'],
+    help=_('Executor type used by Oslo Messaging framework. Defines how '
+           'Oslo Messaging based RPC subsystem processes incoming calls.')
 )
 
 expiration_token_duration = cfg.IntOpt(
@@ -552,6 +561,7 @@ PROFILER_GROUP = profiler.list_opts()[0][0]
 KEYCLOAK_OIDC_GROUP = "keycloak_oidc"
 OPENSTACK_ACTIONS_GROUP = 'openstack_actions'
 YAQL_GROUP = "yaql"
+KEYSTONE_GROUP = "keystone"
 
 
 CONF.register_opt(wf_trace_log_name_opt)
@@ -559,6 +569,7 @@ CONF.register_opt(auth_type_opt)
 CONF.register_opt(js_impl_opt)
 CONF.register_opt(rpc_impl_opt)
 CONF.register_opt(rpc_response_timeout_opt)
+CONF.register_opt(oslo_rpc_executor)
 CONF.register_opt(expiration_token_duration)
 
 CONF.register_opts(api_opts, group=API_GROUP)
@@ -582,6 +593,7 @@ CONF.register_opts(profiler_opts, group=PROFILER_GROUP)
 CONF.register_opts(keycloak_oidc_opts, group=KEYCLOAK_OIDC_GROUP)
 CONF.register_opts(openstack_actions_opts, group=OPENSTACK_ACTIONS_GROUP)
 CONF.register_opts(yaql_opts, group=YAQL_GROUP)
+loading.register_session_conf_options(CONF, KEYSTONE_GROUP)
 
 CLI_OPTS = [
     use_debugger_opt,
@@ -596,6 +608,7 @@ default_group_opts = itertools.chain(
         js_impl_opt,
         rpc_impl_opt,
         rpc_response_timeout_opt,
+        oslo_rpc_executor,
         expiration_token_duration
     ]
 )

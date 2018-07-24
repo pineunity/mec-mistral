@@ -20,7 +20,7 @@ directory.
 
     [keystone_authtoken]
     auth_uri = http://<keystone-host>:5000/v3
-    identity_uri = http://<keystone-host:35357
+    identity_uri = http://<keystone-host:5000
     auth_version = v3
     admin_user = <user>
     admin_password = <password>
@@ -167,6 +167,20 @@ directory.
    - **first_heartbeat_timeout**
 
     The grace period for the first heartbeat (in seconds).
+
+#. Configure event publishers. Event publishers are plugins that are
+   optionally installed in the same virtual environment as Mistral.
+   Event notification can be configured for all workflow execution for one or
+   more event publishers. The configuration is under the notify param at the
+   notifier section. The notify param is a list of dictionaries, one for each
+   publisher identifying the type or the registered plugin name and additional
+   key value pairs to be passed as kwargs into the publisher::
+
+    [notifier]
+    notify = [
+        {'type': 'webhook', 'url': 'http://example.com', 'headers': {'X-Auth-Token': 'XXXX'}},
+        {'type': 'custom_publisher'}
+    ]
 
 #. Finally, try to run mistral engine and verify that it is running without
    any error::

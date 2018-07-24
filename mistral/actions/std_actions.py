@@ -110,7 +110,7 @@ class FailAction(actions.Action):
 
 
 class HTTPAction(actions.Action):
-    """Constructs an HTTP action.
+    """HTTP action.
 
     :param url: URL for the new HTTP request.
     :param method: (optional, 'GET' by default) method for the new HTTP
@@ -190,6 +190,12 @@ class HTTPAction(actions.Action):
         )
 
         try:
+            url_data = six.moves.urllib.parse.urlsplit(self.url)
+            if 'https' == url_data.scheme:
+                action_verify = self.verify
+            else:
+                action_verify = None
+
             resp = requests.request(
                 self.method,
                 self.url,
@@ -201,7 +207,7 @@ class HTTPAction(actions.Action):
                 timeout=self.timeout,
                 allow_redirects=self.allow_redirects,
                 proxies=self.proxies,
-                verify=self.verify
+                verify=action_verify
             )
         except Exception as e:
             LOG.exception(
@@ -266,7 +272,7 @@ class MistralHTTPAction(HTTPAction):
             'Mistral-Callback-URL': exec_ctx.callback_url,
         })
 
-        super(MistralHTTPAction, self).run(context)
+        return super(MistralHTTPAction, self).run(context)
 
     def is_sync(self):
         return False

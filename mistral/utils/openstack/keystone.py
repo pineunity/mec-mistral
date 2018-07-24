@@ -28,9 +28,6 @@ from mistral import context
 from mistral import exceptions
 
 CONF = cfg.CONF
-CONF.register_opt(cfg.IntOpt('timeout'), group='keystone_authtoken')
-CONF.register_opt(cfg.BoolOpt('collect_timing'), group='keystone_authtoken')
-CONF.register_opt(cfg.BoolOpt('split_loggers'), group='keystone_authtoken')
 
 
 def client():
@@ -120,8 +117,10 @@ def _admin_client(trust_id=None):
         kwargs = {}
 
         if trust_id:
-            # Remove project_name and project_id, since we need a trust scoped
-            # auth object
+            # Remove domain_id, domain_name, project_name and project_id,
+            # since we need a trust scoped auth object
+            kwargs['domain_id'] = None
+            kwargs['domain_name'] = None
             kwargs['project_name'] = None
             kwargs['project_domain_name'] = None
             kwargs['project_id'] = None
@@ -134,7 +133,7 @@ def _admin_client(trust_id=None):
         )
         sess = loading.load_session_from_conf_options(
             CONF,
-            'keystone_authtoken',
+            'keystone',
             auth=auth
         )
 
@@ -290,7 +289,7 @@ def get_admin_session():
 
         return loading.load_session_from_conf_options(
             CONF,
-            'keystone_authtoken',
+            'keystone',
             auth=auth
         )
 
