@@ -158,8 +158,8 @@ class BaseTest(base.BaseTestCase):
         found = len(filtered_items)
 
         if found != count:
-            LOG.info("[failed test ctx] items=%s, expected_props=%s", (str(
-                items), props))
+            LOG.info("[failed test ctx] items=%s, expected_props=%s", str(
+                items), props)
             self.fail("Wrong number of items found [props=%s, "
                       "expected=%s, found=%s]" % (props, count, found))
 
@@ -197,16 +197,18 @@ class BaseTest(base.BaseTestCase):
 
         self.fail(self._formatMessage(msg, standardMsg))
 
-    def _await(self, predicate, delay=1, timeout=60, fail_message="no detail"):
+    def _await(self, predicate, delay=1, timeout=60, fail_message="no detail",
+               fail_message_formatter=lambda x: x):
         """Awaits for predicate function to evaluate to True.
 
         If within a configured timeout predicate function hasn't evaluated
         to True then an exception is raised.
-        :param predicate: Predication function.
+        :param predicate: Predicate function.
         :param delay: Delay in seconds between predicate function calls.
         :param timeout: Maximum amount of time to wait for predication
             function to evaluate to True.
         :param fail_message: explains what was expected
+        :param fail_message_formatter: lambda that formats the fail_message
         :return:
         """
         end_time = time.time() + timeout
@@ -217,7 +219,8 @@ class BaseTest(base.BaseTestCase):
 
             if time.time() + delay > end_time:
                 raise AssertionError(
-                    "Failed to wait for expected result: " + fail_message
+                    "Failed to wait for expected result: " +
+                    fail_message_formatter(fail_message)
                 )
 
             time.sleep(delay)
@@ -299,6 +302,7 @@ class DbTestCase(BaseTest):
                     db_api.delete_environments()
                     db_api.delete_resource_members()
                     db_api.delete_delayed_calls()
+                    db_api.delete_scheduled_jobs()
 
         sqlite_lock.cleanup()
 

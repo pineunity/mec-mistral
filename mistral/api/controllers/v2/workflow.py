@@ -104,12 +104,12 @@ class WorkflowsController(rest.RestController, hooks.HookController):
 
         :param identifier: Optional. If provided, it's UUID of a workflow.
             Only one workflow can be updated with identifier param.
-        :param namespace: Optional. If provided int's the namespace of the
-                          workflow/workflows. currently namespace cannot be
+        :param namespace: Optional. If provided, it's the namespace of the
+                          workflow/workflows. Currently, namespace cannot be
                           changed.
 
-        The text is allowed to have definitions of multiple workflows. In this
-        case they all will be updated.
+        The text is allowed to have definitions of multiple workflows. In such
+        case, they all will be updated.
         """
         acl.enforce('workflows:update', context.ctx())
 
@@ -117,6 +117,8 @@ class WorkflowsController(rest.RestController, hooks.HookController):
         scope = pecan.request.GET.get('scope', 'private')
 
         resources.Workflow.validate_scope(scope)
+        if scope == 'public':
+            acl.enforce('workflows:publicize', context.ctx())
 
         LOG.debug("Update workflow(s) [definition=%s]", definition)
 
@@ -139,12 +141,12 @@ class WorkflowsController(rest.RestController, hooks.HookController):
     def post(self, namespace=''):
         """Create a new workflow.
 
-        NOTE: The text is allowed to have definitions
-            of multiple workflows. In this case they all will be created.
-
         :param namespace: Optional. The namespace to create the workflow
             in. Workflows with the same name can be added to a given
-            project if are in two different namespaces.
+            project if they are in two different namespaces.
+
+        The text is allowed to have definitions of multiple workflows.
+        In such case, they all will be created.
         """
         acl.enforce('workflows:create', context.ctx())
 
@@ -153,6 +155,8 @@ class WorkflowsController(rest.RestController, hooks.HookController):
         pecan.response.status = 201
 
         resources.Workflow.validate_scope(scope)
+        if scope == 'public':
+            acl.enforce('workflows:publicize', context.ctx())
 
         LOG.debug("Create workflow(s) [definition=%s]", definition)
 

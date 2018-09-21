@@ -132,10 +132,20 @@ def _extract_mistral_auth_params(headers):
     service_catalog = None
 
     if headers.get("X-Target-Auth-Uri"):
+        insecure_header = headers.get('X-Target-Insecure', 'False')
+        if insecure_header == 'False':
+            insecure = False
+        elif insecure_header == 'True':
+            insecure = True
+        else:
+            raise (exc.MistralException(
+                'X-Target-Insecure must be either "True", "False" or not '
+                'provided. The default is "False".'))
+
         params = {
             # TODO(akovi): Target cert not handled yet
             'auth_cacert': None,
-            'insecure': headers.get('X-Target-Insecure', False),
+            'insecure': insecure,
             'auth_token': headers.get('X-Target-Auth-Token'),
             'auth_uri': headers.get('X-Target-Auth-Uri'),
             'tenant': headers.get('X-Target-Project-Id'),
@@ -219,6 +229,7 @@ class RpcContextSerializer(messaging.Serializer):
             profiler.init(**trace_info)
 
         ctx = MistralContext.from_dict(context)
+
         set_ctx(ctx)
 
         return ctx

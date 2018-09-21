@@ -15,8 +15,10 @@
 #    limitations under the License.
 
 import contextlib
+import datetime
 import sys
 import threading
+
 
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -121,6 +123,11 @@ def transaction(read_only=False):
 @b.session_aware()
 def refresh(model, session=None):
     session.refresh(model)
+
+
+@b.session_aware()
+def expire_all(session=None):
+    session.expire_all()
 
 
 @b.session_aware()
@@ -319,23 +326,55 @@ def _get_db_object_by_name_and_namespace_or_id(model, identifier,
     return query.first()
 
 
+def _get_db_object_by_name_and_namespace(model, name,
+                                         namespace, insecure=False,
+                                         columns=()):
+    query = (
+        b.model_query(model, columns=columns)
+        if insecure
+        else _secure_query(model, *columns)
+    )
+
+    if namespace is None:
+        namespace = ''
+
+    query = query.filter(
+        sa.and_(
+            model.name == name,
+            model.namespace == namespace
+        )
+    )
+
+    return query.first()
+
+
 # Workbook definitions.
 
 @b.session_aware()
-def get_workbook(name, fields=(), session=None):
-    wb = _get_db_object_by_name(models.Workbook, name, columns=fields)
+def get_workbook(name, namespace=None, fields=(), session=None):
+    wb = _get_db_object_by_name_and_namespace(
+        models.Workbook,
+        name,
+        namespace,
+        columns=fields
+    )
 
     if not wb:
         raise exc.DBEntityNotFoundError(
-            "Workbook not found [workbook_name=%s]" % name
+            "Workbook not found [name=%s, namespace=%s]" % (name, namespace)
         )
 
     return wb
 
 
 @b.session_aware()
-def load_workbook(name, fields=(), session=None):
-    return _get_db_object_by_name(models.Workbook, name, columns=fields)
+def load_workbook(name, namespace=None, fields=(), session=None):
+    return _get_db_object_by_name_and_namespace(
+        models.Workbook,
+        name,
+        namespace,
+        columns=fields
+    )
 
 
 @b.session_aware()
@@ -353,8 +392,9 @@ def create_workbook(values, session=None):
         wb.save(session=session)
     except db_exc.DBDuplicateEntry:
         raise exc.DBDuplicateEntryError(
-            "Duplicate entry for WorkbookDefinition ['name', 'project_id']: "
-            "{}, {}".format(wb.name, wb.project_id)
+            "Duplicate entry for WorkbookDefinition "
+            "['name', 'namespace', 'project_id']: {}, {}, {}".format(
+                wb.name, wb.namespace, wb.project_id)
         )
 
     return wb
@@ -362,7 +402,8 @@ def create_workbook(values, session=None):
 
 @b.session_aware()
 def update_workbook(name, values, session=None):
-    wb = get_workbook(name)
+    namespace = values.get('namespace')
+    wb = get_workbook(name, namespace=namespace)
 
     wb.update(values.copy())
 
@@ -378,13 +419,20 @@ def create_or_update_workbook(name, values, session=None):
 
 
 @b.session_aware()
-def delete_workbook(name, session=None):
+def delete_workbook(name, namespace=None, session=None):
+    namespace = namespace or ''
+
     count = _secure_query(models.Workbook).filter(
-        models.Workbook.name == name).delete()
+        sa.and_(
+            models.Workbook.name == name,
+            models.Workbook.namespace == namespace
+        )
+    ).delete()
 
     if count == 0:
         raise exc.DBEntityNotFoundError(
-            "Workbook not found [workbook_name=%s]" % name
+            "Workbook not found [workbook_name=%s, namespace=%s]"
+            % (name, namespace)
         )
 
 
@@ -490,7 +538,8 @@ def create_workflow_definition(values, session=None):
 
 
 @b.session_aware()
-def update_workflow_definition(identifier, values, namespace='', session=None):
+def update_workflow_definition(identifier, values, session=None):
+    namespace = values.get('namespace')
     wf_def = get_workflow_definition(identifier, namespace=namespace)
 
     m_dbutils.check_db_obj_access(wf_def)
@@ -528,10 +577,13 @@ def update_workflow_definition(identifier, values, namespace='', session=None):
 
 @b.session_aware()
 def create_or_update_workflow_definition(name, values, session=None):
-    if not _get_db_object_by_name(models.WorkflowDefinition, name):
-        return create_workflow_definition(values)
-    else:
+    namespace = values.get('namespace')
+    if _get_db_object_by_name_and_namespace_or_id(
+            models.WorkflowDefinition,
+            name,
+            namespace=namespace):
         return update_workflow_definition(name, values)
+    return create_workflow_definition(values)
 
 
 @b.session_aware()
@@ -1088,6 +1140,123 @@ def delete_delayed_calls(session=None, **kwargs):
 
 
 @b.session_aware()
+def create_scheduled_job(values, session=None):
+    job = models.ScheduledJob()
+
+    job.update(values.copy())
+
+    try:
+        job.save(session)
+    except db_exc.DBDuplicateEntry as e:
+        raise exc.DBDuplicateEntryError(
+            "Duplicate entry for ScheduledJob ID: {}".format(e.value)
+        )
+
+    return job
+
+
+@b.session_aware()
+def get_scheduled_jobs_to_start(time, batch_size=None, session=None):
+    query = b.model_query(models.ScheduledJob)
+
+    execute_at_col = models.ScheduledJob.execute_at
+    captured_at_col = models.ScheduledJob.captured_at
+
+    # Filter by execution time accounting for a configured job pickup interval.
+    query = query.filter(
+        execute_at_col <
+        time - datetime.timedelta(seconds=CONF.scheduler.pickup_job_after)
+    )
+
+    # Filter by captured time accounting for a configured captured job timeout.
+    min_captured_at = (
+        datetime.datetime.now() -
+        datetime.timedelta(seconds=CONF.scheduler.captured_job_timeout)
+    )
+
+    query = query.filter(
+        sa.or_(
+            captured_at_col == sa.null(),
+            captured_at_col <= min_captured_at
+        )
+    )
+
+    query = query.order_by(execute_at_col)
+    query = query.limit(batch_size)
+
+    return query.all()
+
+
+@b.session_aware()
+def update_scheduled_job(id, values, query_filter=None, session=None):
+    if query_filter:
+        try:
+            specimen = models.ScheduledJob(id=id, **query_filter)
+
+            job = b.model_query(
+                models.ScheduledJob
+            ).update_on_match(
+                specimen=specimen,
+                surrogate_key='id',
+                values=values
+            )
+
+            return job, 1
+
+        except oslo_sqlalchemy.update_match.NoRowsMatched as e:
+            LOG.debug(
+                "No rows matched for update scheduled job [id=%s, values=%s, "
+                "query_filter=%s,"
+                "exception=%s]", id, values, query_filter, e
+            )
+
+            return None, 0
+
+    else:
+        job = get_scheduled_job(id=id, session=session)
+
+        job.update(values)
+
+        return job, len(session.dirty)
+
+
+@b.session_aware()
+def get_scheduled_job(id, session=None):
+    job = _get_db_object_by_id(models.ScheduledJob, id)
+
+    if not job:
+        raise exc.DBEntityNotFoundError(
+            "Scheduled job not found [id=%s]" % id
+        )
+
+    return job
+
+
+@b.session_aware()
+def delete_scheduled_job(id, session=None):
+    # It's safe to use insecure query here because users can't access
+    # scheduled job.
+    count = b.model_query(models.ScheduledJob).filter(
+        models.ScheduledJob.id == id).delete()
+
+    if count == 0:
+        raise exc.DBEntityNotFoundError(
+            "Scheduled job not found [id=%s]" % id
+        )
+
+
+def get_scheduled_jobs(**kwargs):
+    return _get_collection(model=models.ScheduledJob, **kwargs)
+
+
+@b.session_aware()
+def delete_scheduled_jobs(session=None, **kwargs):
+    return _delete_all(models.ScheduledJob, **kwargs)
+
+
+# Other functions.
+
+@b.session_aware()
 def get_expired_executions(expiration_time, limit=None, columns=(),
                            session=None):
     query = _get_completed_root_executions_query(columns)
@@ -1102,6 +1271,7 @@ def get_expired_executions(expiration_time, limit=None, columns=(),
 @b.session_aware()
 def get_running_expired_sync_actions(expiration_time, session=None):
     query = b.model_query(models.ActionExecution)
+
     query = query.filter(
         models.ActionExecution.last_heartbeat < expiration_time
     )

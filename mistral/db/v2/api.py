@@ -62,6 +62,10 @@ def refresh(model):
     IMPL.refresh(model)
 
 
+def expire_all():
+    IMPL.expire_all()
+
+
 # Locking.
 
 
@@ -71,13 +75,13 @@ def acquire_lock(model, id):
 
 # Workbooks.
 
-def get_workbook(name, fields=()):
-    return IMPL.get_workbook(name, fields=fields)
+def get_workbook(name, namespace, fields=()):
+    return IMPL.get_workbook(name, namespace=namespace, fields=fields)
 
 
-def load_workbook(name, fields=()):
+def load_workbook(name, namespace, fields=()):
     """Unlike get_workbook this method is allowed to return None."""
-    return IMPL.load_workbook(name, fields=fields)
+    return IMPL.load_workbook(name, namespace=namespace, fields=fields)
 
 
 def get_workbooks(limit=None, marker=None, sort_keys=None,
@@ -104,8 +108,8 @@ def create_or_update_workbook(name, values):
     return IMPL.create_or_update_workbook(name, values)
 
 
-def delete_workbook(name):
-    IMPL.delete_workbook(name)
+def delete_workbook(name, namespace=None):
+    IMPL.delete_workbook(name, namespace)
 
 
 def delete_workbooks(**kwargs):
@@ -147,8 +151,8 @@ def create_workflow_definition(values):
     return IMPL.create_workflow_definition(values)
 
 
-def update_workflow_definition(identifier, values, namespace):
-    return IMPL.update_workflow_definition(identifier, values, namespace)
+def update_workflow_definition(identifier, values):
+    return IMPL.update_workflow_definition(identifier, values)
 
 
 def create_or_update_workflow_definition(name, values):
@@ -380,6 +384,36 @@ def get_delayed_calls(**kwargs):
 
 def delete_delayed_calls(**kwargs):
     return IMPL.delete_delayed_calls(**kwargs)
+
+
+# Scheduled jobs.
+
+def get_scheduled_jobs_to_start(time, batch_size=None):
+    return IMPL.get_scheduled_jobs_to_start(time, batch_size)
+
+
+def create_scheduled_job(values):
+    return IMPL.create_scheduled_job(values)
+
+
+def delete_scheduled_job(id):
+    return IMPL.delete_scheduled_job(id)
+
+
+def update_scheduled_job(id, values, query_filter=None):
+    return IMPL.update_scheduled_job(id, values, query_filter)
+
+
+def get_scheduled_job(id):
+    return IMPL.get_scheduled_job(id)
+
+
+def get_scheduled_jobs(**kwargs):
+    return IMPL.get_scheduled_jobs(**kwargs)
+
+
+def delete_scheduled_jobs(**kwargs):
+    return IMPL.delete_scheduled_jobs(**kwargs)
 
 
 # Cron triggers.

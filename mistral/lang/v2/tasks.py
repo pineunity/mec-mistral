@@ -33,12 +33,7 @@ _expr_ptrns = [expressions.patterns[name] for name in expressions.patterns]
 WITH_ITEMS_PTRN = re.compile(
     "\s*([\w\d_\-]+)\s*in\s*(\[.+\]|%s)" % '|'.join(_expr_ptrns)
 )
-RESERVED_TASK_NAMES = [
-    'noop',
-    'fail',
-    'succeed',
-    'pause'
-]
+
 MAX_LENGTH_TASK_NAME = 255
 # Length of a join task name must be less than or equal to maximum
 # of task_executions unique_key and named_locks name. Their
@@ -107,8 +102,8 @@ class TaskSpec(base.BaseSpec):
         ]
     }
 
-    def __init__(self, data):
-        super(TaskSpec, self).__init__(data)
+    def __init__(self, data, validate):
+        super(TaskSpec, self).__init__(data, validate)
 
         self._name = data['name']
         self._description = data.get('description')
@@ -154,12 +149,6 @@ class TaskSpec(base.BaseSpec):
 
     def _validate_name(self):
         task_name = self._data.get('name')
-
-        if task_name in RESERVED_TASK_NAMES:
-            raise exc.InvalidModelException(
-                "Reserved keyword '%s' not allowed as task name." %
-                task_name
-            )
 
         if len(task_name) > MAX_LENGTH_TASK_NAME:
             raise exc.InvalidModelException(
@@ -248,10 +237,14 @@ class TaskSpec(base.BaseSpec):
         spec = None
 
         if state == states.SUCCESS and self._publish:
-            spec = publish.PublishSpec({'branch': self._publish})
+            spec = publish.PublishSpec(
+                {'branch': self._publish},
+                validate=self._validate
+            )
         elif state == states.ERROR and self._publish_on_error:
             spec = publish.PublishSpec(
-                {'branch': self._publish_on_error}
+                {'branch': self._publish_on_error},
+                validate=self._validate
             )
 
         return spec
@@ -291,8 +284,8 @@ class DirectWorkflowTaskSpec(TaskSpec):
         _direct_workflow_schema
     )
 
-    def __init__(self, data):
-        super(DirectWorkflowTaskSpec, self).__init__(data)
+    def __init__(self, data, validate):
+        super(DirectWorkflowTaskSpec, self).__init__(data, validate)
 
         self._join = data.get('join')
 
@@ -376,8 +369,8 @@ class ReverseWorkflowTaskSpec(TaskSpec):
         _reverse_workflow_schema
     )
 
-    def __init__(self, data):
-        super(ReverseWorkflowTaskSpec, self).__init__(data)
+    def __init__(self, data, validate):
+        super(ReverseWorkflowTaskSpec, self).__init__(data, validate)
 
         self._requires = data.get('requires', [])
 

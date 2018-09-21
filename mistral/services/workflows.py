@@ -54,7 +54,9 @@ def sync_db():
 def create_workflows(definition, scope='private', is_system=False,
                      run_in_tx=True, namespace=''):
     LOG.debug("Creating workflows")
-    wf_list_spec = spec_parser.get_workflow_list_spec_from_yaml(definition)
+    wf_list_spec = spec_parser.get_workflow_list_spec_from_yaml(
+        definition, validate=True
+    )
     db_wfs = []
 
     if run_in_tx:
@@ -98,7 +100,9 @@ def update_workflows(definition, scope='private', identifier=None,
                      namespace=''):
     LOG.debug("Updating workflows")
 
-    wf_list_spec = spec_parser.get_workflow_list_spec_from_yaml(definition)
+    wf_list_spec = spec_parser.get_workflow_list_spec_from_yaml(
+        definition, validate=True
+    )
     wfs = wf_list_spec.get_workflows()
 
     if identifier and len(wfs) > 1:
@@ -165,6 +169,5 @@ def _update_workflow(wf_spec, definition, scope, identifier=None,
 
     return db_api.update_workflow_definition(
         identifier if identifier else values['name'],
-        values,
-        namespace=namespace
+        values
     )

@@ -43,26 +43,33 @@ class WorkbooksController(rest.RestController, hooks.HookController):
         spec_parser.get_workbook_spec_from_yaml)
 
     @rest_utils.wrap_wsme_controller_exception
-    @wsme_pecan.wsexpose(resources.Workbook, wtypes.text)
-    def get(self, name):
+    @wsme_pecan.wsexpose(resources.Workbook, wtypes.text, wtypes.text)
+    def get(self, name, namespace=''):
         """Return the named workbook.
 
-        :param name: Name of workbook to retrieve
+        :param name: Name of workbook to retrieve.
+        :param namespace: Optional. Namespace of workbook to retrieve.
         """
         acl.enforce('workbooks:get', context.ctx())
 
-        LOG.debug("Fetch workbook [name=%s]", name)
+        LOG.debug("Fetch workbook [name=%s, namespace=%s]", name, namespace)
 
         # Use retries to prevent possible failures.
         r = rest_utils.create_db_retry_object()
-        db_model = r.call(db_api.get_workbook, name)
+        db_model = r.call(db_api.get_workbook,
+                          name,
+                          namespace=namespace)
 
         return resources.Workbook.from_db_model(db_model)
 
     @rest_utils.wrap_pecan_controller_exception
     @pecan.expose(content_type="text/plain")
-    def put(self):
-        """Update a workbook."""
+    def put(self, namespace=''):
+        """Update a workbook.
+
+        :param namespace: Optional. Namespace of workbook to update.
+        """
+
         acl.enforce('workbooks:update', context.ctx())
 
         definition = pecan.request.text
@@ -73,15 +80,23 @@ class WorkbooksController(rest.RestController, hooks.HookController):
         LOG.debug("Update workbook [definition=%s]", definition)
 
         wb_db = rest_utils.rest_retry_on_db_error(
-            workbooks.update_workbook_v2
-        )(definition, scope=scope)
+            workbooks.update_workbook_v2)(
+            definition,
+            namespace=namespace,
+            scope=scope
+        )
 
         return resources.Workbook.from_db_model(wb_db).to_json()
 
     @rest_utils.wrap_pecan_controller_exception
     @pecan.expose(content_type="text/plain")
-    def post(self):
-        """Create a new workbook."""
+    def post(self, namespace=''):
+        """Create a new workbook.
+
+        :param namespace: Optional. The namespace to create the workbook
+            in. Workbooks with the same name can be added to a given
+            project if they are in two different namespaces.
+        """
         acl.enforce('workbooks:create', context.ctx())
 
         definition = pecan.request.text
@@ -92,35 +107,43 @@ class WorkbooksController(rest.RestController, hooks.HookController):
         LOG.debug("Create workbook [definition=%s]", definition)
 
         wb_db = rest_utils.rest_retry_on_db_error(
-            workbooks.create_workbook_v2
-        )(definition, scope=scope)
+            workbooks.create_workbook_v2)(
+            definition,
+            namespace=namespace,
+            scope=scope
+        )
 
         pecan.response.status = 201
 
         return resources.Workbook.from_db_model(wb_db).to_json()
 
     @rest_utils.wrap_wsme_controller_exception
-    @wsme_pecan.wsexpose(None, wtypes.text, status_code=204)
-    def delete(self, name):
+    @wsme_pecan.wsexpose(None, wtypes.text, wtypes.text, status_code=204)
+    def delete(self, name, namespace=''):
         """Delete the named workbook.
 
-        :param name: Name of workbook to delete
+        :param name: Name of workbook to delete.
+        :param namespace: Optional. Namespace of workbook to delete.
         """
         acl.enforce('workbooks:delete', context.ctx())
 
-        LOG.debug("Delete workbook [name=%s]", name)
+        LOG.debug("Delete workbook [name=%s, namespace=%s]", name, namespace)
 
-        rest_utils.rest_retry_on_db_error(db_api.delete_workbook)(name)
+        rest_utils.rest_retry_on_db_error(db_api.delete_workbook)(
+            name,
+            namespace
+        )
 
     @rest_utils.wrap_wsme_controller_exception
     @wsme_pecan.wsexpose(resources.Workbooks, types.uuid, int,
                          types.uniquelist, types.list, types.uniquelist,
                          wtypes.text, wtypes.text, wtypes.text,
-                         resources.SCOPE_TYPES, wtypes.text, wtypes.text)
+                         resources.SCOPE_TYPES, wtypes.text,
+                         wtypes.text, wtypes.text)
     def get_all(self, marker=None, limit=None, sort_keys='created_at',
                 sort_dirs='asc', fields='', created_at=None,
                 definition=None, name=None, scope=None, tags=None,
-                updated_at=None):
+                updated_at=None, namespace=None):
         """Return a list of workbooks.
 
         :param marker: Optional. Pagination marker for large data sets.
@@ -145,6 +168,8 @@ class WorkbooksController(rest.RestController, hooks.HookController):
                            time and date.
         :param updated_at: Optional. Keep only resources with specific latest
                            update time and date.
+        :param namespace: Optional. Keep only resources with specific
+                          namespace.
         """
         acl.enforce('workbooks:list', context.ctx())
 
@@ -154,7 +179,8 @@ class WorkbooksController(rest.RestController, hooks.HookController):
             name=name,
             scope=scope,
             tags=tags,
-            updated_at=updated_at
+            updated_at=updated_at,
+            namespace=namespace
         )
 
         LOG.debug("Fetch workbooks. marker=%s, limit=%s, sort_keys=%s, "

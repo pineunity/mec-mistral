@@ -61,6 +61,9 @@ heatclient = _try_import('heatclient.client')
 ironic_inspector_client = _try_import('ironic_inspector_client.v1')
 ironicclient = _try_import('ironicclient.v1.client')
 keystoneclient = _try_import('keystoneclient.v3.client')
+manila = _try_import('manilaclient')
+manilaclient = _try_import('manilaclient.client')
+manila_api_versions = _try_import('manilaclient.api_versions')
 magnumclient = _try_import('magnumclient.v1.client')
 mistralclient = _try_import('mistralclient.api.v2.client')
 muranoclient = _try_import('muranoclient.v1.client')
@@ -582,13 +585,13 @@ class BarbicanAction(base.OpenStackAction):
         LOG.debug("Barbican action security context: %s", context)
 
         barbican_endpoint = keystone_utils.get_endpoint_for_project('barbican')
-        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        keystone_endpoint = keystone_utils.get_keystone_endpoint()
 
-        auth = identity.v2.Token(
+        auth = identity.v3.Token(
             auth_url=keystone_endpoint.url,
-            tenant_name=context.user_name,
+            project_name=context.user_name,
             token=context.auth_token,
-            tenant_id=context.project_id
+            project_id=context.project_id
         )
 
         return self._get_client_class()(
@@ -723,7 +726,7 @@ class MagnumAction(base.OpenStackAction):
 
         LOG.debug("Magnum action security context: %s", context)
 
-        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        keystone_endpoint = keystone_utils.get_keystone_endpoint()
         auth_url = keystone_endpoint.url
         magnum_url = keystone_utils.get_endpoint_for_project('magnum').url
 
@@ -731,7 +734,6 @@ class MagnumAction(base.OpenStackAction):
             magnum_url=magnum_url,
             auth_token=context.auth_token,
             project_id=context.project_id,
-            user_id=context.user_id,
             auth_url=auth_url,
             insecure=context.insecure
         )
@@ -752,7 +754,7 @@ class MuranoAction(base.OpenStackAction):
 
         LOG.debug("Murano action security context: %s", context)
 
-        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        keystone_endpoint = keystone_utils.get_keystone_endpoint()
         murano_endpoint = self.get_service_endpoint()
 
         return self._get_client_class()(
@@ -780,7 +782,7 @@ class TackerAction(base.OpenStackAction):
 
         LOG.debug("Tacker action security context: %s", context)
 
-        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        keystone_endpoint = keystone_utils.get_keystone_endpoint()
         tacker_endpoint = self.get_service_endpoint()
 
         return self._get_client_class()(
@@ -808,7 +810,7 @@ class SenlinAction(base.OpenStackAction):
 
         LOG.debug("Senlin action security context: %s", context)
 
-        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        keystone_endpoint = keystone_utils.get_keystone_endpoint()
         senlin_endpoint = self.get_service_endpoint()
 
         return self._get_client_class()(
@@ -956,7 +958,7 @@ class ZunAction(base.OpenStackAction):
 
         LOG.debug("Zun action security context: %s", context)
 
-        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        keystone_endpoint = keystone_utils.get_keystone_endpoint()
         zun_endpoint = self.get_service_endpoint()
         session_and_auth = self.get_session_and_auth(context)
 
@@ -1000,6 +1002,47 @@ class QinlingAction(base.OpenStackAction):
             session=session
         )
 
+
+class ManilaAction(base.OpenStackAction):
+    _service_type = 'sharev2'
+
+    @classmethod
+    def _get_client_class(cls):
+        return manilaclient.Client
+
+    def _create_client(self, context):
+
+        LOG.debug("Manila action security context: %s", context)
+
+        manila_endpoint = self.get_service_endpoint()
+
+        session_and_auth = self.get_session_and_auth(context)
+
+        temp_client = self._get_client_class()(
+            manila.API_MAX_VERSION,
+            service_catalog_url=manila_endpoint.url,
+            session=session_and_auth['auth']
+        )
+
+        discovered_version = manila_api_versions.discover_version(
+            temp_client,
+            manila.API_MAX_VERSION
+        )
+
+        client = self._get_client_class()(
+            discovered_version,
+            service_catalog_url=manila_endpoint.url,
+            session=session_and_auth['session']
+        )
+
+        return client
+
+    @classmethod
+    def _get_fake_client(cls):
+        return cls._get_client_class()(
+            manila.API_MAX_VERSION,
+            input_auth_token='token',
+            service_catalog_url='http://127.0.0.1:8786')
 
 class ApmecAction(base.OpenStackAction):
     _service_name = 'apmec'

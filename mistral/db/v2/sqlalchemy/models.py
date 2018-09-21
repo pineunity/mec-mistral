@@ -113,9 +113,14 @@ class Workbook(Definition):
     """Contains info about workbook (including definition in Mistral DSL)."""
 
     __tablename__ = 'workbooks_v2'
+    namespace = sa.Column(sa.String(255), nullable=True)
 
     __table_args__ = (
-        sa.UniqueConstraint('name', 'project_id'),
+        sa.UniqueConstraint(
+            'name',
+            'namespace',
+            'project_id'
+        ),
         sa.Index('%s_project_id' % __tablename__, 'project_id'),
         sa.Index('%s_scope' % __tablename__, 'scope'),
     )
@@ -379,7 +384,7 @@ class DelayedCall(mb.MistralModelBase):
     method_arguments = sa.Column(st.JsonDictType())
     serializers = sa.Column(st.JsonDictType())
     key = sa.Column(sa.String(250), nullable=True)
-    auth_context = sa.Column(st.JsonDictType())
+    auth_context = sa.Column(st.JsonMediumDictType())
     execution_time = sa.Column(sa.DateTime, nullable=False)
     processing = sa.Column(sa.Boolean, default=False, nullable=False)
 
@@ -387,6 +392,39 @@ class DelayedCall(mb.MistralModelBase):
 sa.Index(
     '%s_execution_time' % DelayedCall.__tablename__,
     DelayedCall.execution_time
+)
+
+
+class ScheduledJob(mb.MistralModelBase):
+    """Contains info about scheduled jobs."""
+
+    __tablename__ = 'scheduled_jobs_v2'
+
+    id = mb.id_column()
+
+    run_after = sa.Column(sa.Integer)
+
+    # The full name of the factory function that returns/builds a Python
+    # (target) object whose method should be called. Optional.
+    target_factory_func_name = sa.Column(sa.String(200), nullable=True)
+
+    # May take two different forms:
+    # 1. Full path of a target function that should be called. For example,
+    #  "mistral.utils.random_sleep".
+    # 2. Name of a method to call on a target object, if
+    #  "target_factory_func_name" is specified.
+    func_name = sa.Column(sa.String(80), nullable=False)
+
+    func_args = sa.Column(st.JsonDictType())
+    func_arg_serializers = sa.Column(st.JsonDictType())
+    auth_ctx = sa.Column(st.JsonDictType())
+    execute_at = sa.Column(sa.DateTime, nullable=False)
+    captured_at = sa.Column(sa.DateTime, nullable=True)
+
+
+sa.Index(
+    '%s_execution_time' % ScheduledJob.__tablename__,
+    ScheduledJob.execute_at
 )
 
 

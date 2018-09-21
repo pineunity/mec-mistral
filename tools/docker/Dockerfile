@@ -8,6 +8,7 @@ LABEL name="Mistral" \
 RUN apt-get -qq update && \
     apt-get install -y  \
       libffi-dev \
+      libpq-dev \
       libssl-dev \
       libxml2-dev \
       libxslt1-dev \
@@ -22,7 +23,8 @@ RUN apt-get -qq update && \
       libuv1 \
       libuv1-dev && \
       curl -f -o /tmp/get-pip.py https://bootstrap.pypa.io/3.2/get-pip.py && \
-      python /tmp/get-pip.py && rm /tmp/get-pip.py
+      python /tmp/get-pip.py && rm /tmp/get-pip.py && \
+      pip install --upgrade pip
 
 RUN pip install pymysql psycopg2 py_mini_racer
 
@@ -36,7 +38,10 @@ ENV MISTRAL_DIR="/opt/stack/mistral" \
     RUN_TESTS="false" \
     DEBIAN_FRONTEND="noninteractive" \
     MISTRAL_SERVER="all" \
-    LOG_DEBUG="false"
+    LOG_DEBUG="false" \
+    AUTH_URL="http://keycloak:8080/auth" \
+    AUTH_ENABLE="false" \
+    AUTH_TYPE="keycloak-oidc"
 
 # We install dependencies separatly for a caching purpose
 COPY requirements.txt "${MISTRAL_DIR}/"
