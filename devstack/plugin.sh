@@ -120,9 +120,9 @@ function install_mistral {
     # installing python-nose.
     real_install_package python-nose
 
-    if is_service_enabled horizon; then
-        _install_mistraldashboard
-    fi
+    #if is_service_enabled horizon; then
+    #    _install_mistraldashboard
+    #fi
 
     if [ "$MISTRAL_USE_MOD_WSGI" == "True" ]; then
         install_apache_wsgi
@@ -130,11 +130,11 @@ function install_mistral {
 }
 
 
-function _install_mistraldashboard {
-    git_clone $MISTRAL_DASHBOARD_REPO $MISTRAL_DASHBOARD_DIR $MISTRAL_DASHBOARD_BRANCH
-    setup_develop $MISTRAL_DASHBOARD_DIR
-    ln -fs $MISTRAL_DASHBOARD_DIR/mistraldashboard/enabled/_50_mistral.py $HORIZON_DIR/openstack_dashboard/local/enabled/_50_mistral.py
-}
+#function _install_mistraldashboard {
+#    git_clone $MISTRAL_DASHBOARD_REPO $MISTRAL_DASHBOARD_DIR $MISTRAL_DASHBOARD_BRANCH
+#    setup_develop $MISTRAL_DASHBOARD_DIR
+#    ln -fs $MISTRAL_DASHBOARD_DIR/mistraldashboard/enabled/_50_mistral.py $HORIZON_DIR/openstack_dashboard/local/enabled/_50_mistral.py
+#}
 
 
 function install_mistral_pythonclient {
@@ -196,9 +196,9 @@ function stop_mistral {
 
 
 function cleanup_mistral {
-    if is_service_enabled horizon; then
-        _mistral_cleanup_mistraldashboard
-    fi
+    #if is_service_enabled horizon; then
+    #    _mistral_cleanup_mistraldashboard
+    #fi
 
     if [ "$MISTRAL_USE_MOD_WSGI" == "True" ]; then
         _mistral_cleanup_apache_wsgi
@@ -207,9 +207,9 @@ function cleanup_mistral {
 }
 
 
-function _mistral_cleanup_mistraldashboard {
-    rm -f $HORIZON_DIR/openstack_dashboard/local/enabled/_50_mistral.py
-}
+#function _mistral_cleanup_mistraldashboard {
+#    rm -f $HORIZON_DIR/openstack_dashboard/local/enabled/_50_mistral.py
+#}
 
 function _mistral_cleanup_apache_wsgi {
     sudo rm -f $(apache_site_config_for mistral-api)
