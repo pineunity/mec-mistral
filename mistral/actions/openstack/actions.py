@@ -1055,7 +1055,7 @@ class ApmecAction(base.OpenStackAction):
 
         LOG.debug("Apmec action security context: %s", context)
 
-        keystone_endpoint = keystone_utils.get_keystone_endpoint_v2()
+        keystone_endpoint = keystone_utils.get_keystone_endpoint()
         apmec_endpoint = self.get_service_endpoint()
 
         return self._get_client_class()(
