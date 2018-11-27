@@ -57,7 +57,7 @@ class EngineTestCase(base.DbTestCase):
         messaging.get_transport(cfg.CONF)
 
         # Set the transport to 'fake' for Engine tests.
-        cfg.CONF.set_default('rpc_backend', 'fake')
+        cfg.CONF.set_default('transport_url', 'fake:/')
 
         # Drop all RPC objects (transport, clients).
         rpc_base.cleanup()
@@ -140,13 +140,14 @@ class EngineTestCase(base.DbTestCase):
                 for t in w.task_executions:
                     print(
                         "\t%s [id=%s, state=%s, state_info=%s, processed=%s,"
-                        " published=%s]" %
+                        " published=%s, runtime_context=%s]" %
                         (t.name,
                          t.id,
                          t.state,
                          t.state_info,
                          t.processed,
-                         t.published)
+                         t.published,
+                         t.runtime_context)
                     )
 
                     child_execs = t.executions
@@ -270,8 +271,8 @@ class EngineTestCase(base.DbTestCase):
             lambda: self.is_workflow_in_state(ex_id, state),
             delay,
             timeout,
-            fail_message="Execution {ex_id} to reach {state} "
-                         "state but is in {current}",
+            fail_message="Execution {ex_id} must have reached state {state} "
+                         "state but it is in {current}",
             fail_message_formatter=lambda m: m.format(
                 ex_id=ex_id,
                 state=state,

@@ -144,7 +144,8 @@ class WorkflowController(object):
             return []
 
         cmds = [
-            commands.RunExistingTask(self.wf_ex, self.wf_spec, t_e, reset)
+            commands.RunExistingTask(self.wf_ex, self.wf_spec, t_e, reset,
+                                     rerun=True)
             for t_e in task_execs
         ]
 
@@ -164,6 +165,16 @@ class WorkflowController(object):
             the number of preconditions that are not yet met in case if
             state is WAITING. This number can be used to estimate how
             frequently we can refresh the state of this task.
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def find_indirectly_affected_task_executions(self, task_name):
+        """Get a set of task executions indirectly affected by the given.
+
+        :param task_name: Task name.
+        :return: Task executions that can be indirectly affected by a task
+            identified by the given name.
         """
         raise NotImplementedError
 
@@ -218,6 +229,11 @@ class WorkflowController(object):
         :return: List of upstream task executions for the given task spec.
         """
         raise NotImplementedError
+
+    def may_complete_workflow(self, task_ex):
+        """Determines if the task execution may lead to workflow completion."""
+
+        return states.is_completed(task_ex.state)
 
     @abc.abstractmethod
     def _find_next_commands(self, task_ex):

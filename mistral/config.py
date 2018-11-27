@@ -78,7 +78,7 @@ api_opts = [
     cfg.BoolOpt(
         'enable_ssl_api',
         default=False,
-        help=_('Enable the integrated stand-alone API to service requests'
+        help=_('Enable the integrated stand-alone API to service requests '
                'via HTTPS instead of HTTP.')
     ),
     cfg.IntOpt(
@@ -183,6 +183,14 @@ engine_opts = [
                ' will be restored automatically. If this property is'
                ' set to a negative value Mistral will never be doing '
                ' this check.')
+    ),
+    cfg.IntOpt(
+        'execution_integrity_check_batch_size',
+        default=5,
+        min=1,
+        help=_('A number of task executions in RUNNING state that the'
+               ' execution integrity checker can process in a single'
+               ' iteration.')
     ),
     cfg.IntOpt(
         'action_definition_cache_time',
@@ -413,19 +421,27 @@ action_heartbeat_opts = [
         min=0,
         default=15,
         help=_('The maximum amount of missed heartbeats to be allowed. '
-               'If set to 0 then this feature won\'t be enabled. '
+               'If set to 0 then this feature is disabled. '
                'See check_interval for more details.')
     ),
     cfg.IntOpt(
         'check_interval',
         min=0,
         default=20,
-        help=_('How often the action executions are checked (in seconds). '
-               'For example when check_interval = 10, check action '
+        help=_('How often (in seconds) action executions are checked. '
+               'For example when check_interval is 10, check action '
                'executions every 10 seconds. When the checker runs it will '
                'transit all running action executions to error if the last '
                'heartbeat received is older than 10 * max_missed_heartbeats '
-               'seconds. If set to 0 then this feature won\'t be enabled.')
+               'seconds. If set to 0 then this feature is disabled.')
+    ),
+    cfg.IntOpt(
+        'batch_size',
+        min=0,
+        default=10,
+        help=_('The maximum number of action executions processed during '
+               'one iteration of action execution heartbeat checker. If set '
+               'to 0 then there is no limit.')
     ),
     cfg.IntOpt(
         'first_heartbeat_timeout',

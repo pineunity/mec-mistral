@@ -41,18 +41,17 @@ from mistral.workflow import states
 CONF = cfg.CONF
 
 
-def _create_lru_cache_for_workflow_execution(wf_ex_id):
+def _create_workflow_execution_cache():
     return cachetools.LRUCache(maxsize=500)
+
 
 # This is a two-level caching structure.
 # First level: [<workflow execution id> -> <task execution cache>]
 # Second level (task execution cache): [<task_name> -> <task executions>]
 # The first level (by workflow execution id) allows to invalidate
 # needed cache entry when the workflow gets completed.
-_TASK_EX_CACHE = cachetools.LRUCache(
-    maxsize=100,
-    missing=_create_lru_cache_for_workflow_execution
-)
+_TASK_EX_CACHE = cachetools.LRUCache(maxsize=100)
+
 
 _ACTION_DEF_CACHE = cachetools.TTLCache(
     maxsize=1000,
@@ -70,17 +69,19 @@ def find_action_definition_by_name(action_name):
     :return: Action definition (possibly a cached value).
     """
     with _ACTION_DEF_CACHE_LOCK:
-        action_definition = _ACTION_DEF_CACHE.get(action_name)
+        action_def = _ACTION_DEF_CACHE.get(action_name)
 
-    if action_definition:
-        return action_definition
+    if action_def:
+        return action_def
 
-    action_definition = db_api.load_action_definition(action_name)
+    action_def = db_api.load_action_definition(action_name)
 
     with _ACTION_DEF_CACHE_LOCK:
-        _ACTION_DEF_CACHE[action_name] = action_definition
+        _ACTION_DEF_CACHE[action_name] = (
+            action_def.get_clone() if action_def else None
+        )
 
-    return action_definition
+    return action_def
 
 
 def find_task_executions_by_name(wf_ex_id, task_name):
@@ -88,10 +89,18 @@ def find_task_executions_by_name(wf_ex_id, task_name):
 
     :param wf_ex_id: Workflow execution id.
     :param task_name: Task name.
-    :return: Task executions (possibly a cached value).
+    :return: Task executions (possibly a cached value). The returned list
+        may contain task execution clones not bound to the DB session.
     """
     with _TASK_EX_CACHE_LOCK:
-        t_execs = _TASK_EX_CACHE[wf_ex_id].get(task_name)
+        if wf_ex_id in _TASK_EX_CACHE:
+            wf_ex_cache = _TASK_EX_CACHE[wf_ex_id]
+        else:
+            wf_ex_cache = _create_workflow_execution_cache()
+
+            _TASK_EX_CACHE[wf_ex_id] = wf_ex_cache
+
+        t_execs = wf_ex_cache.get(task_name)
 
     if t_execs:
         return t_execs
@@ -102,6 +111,8 @@ def find_task_executions_by_name(wf_ex_id, task_name):
         sort_keys=[]  # disable sorting
     )
 
+    t_execs = [t_ex.get_clone() for t_ex in t_execs]
+
     # We can cache only finished tasks because they won't change.
     all_finished = (
         t_execs and
@@ -110,7 +121,7 @@ def find_task_executions_by_name(wf_ex_id, task_name):
 
     if all_finished:
         with _TASK_EX_CACHE_LOCK:
-            _TASK_EX_CACHE[wf_ex_id][task_name] = t_execs
+            wf_ex_cache[task_name] = t_execs
 
     return t_execs
 

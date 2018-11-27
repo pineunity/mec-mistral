@@ -26,6 +26,8 @@ from mistral.db.v2 import api as db_api
 from mistral.engine import actions
 from mistral.engine import dispatcher
 from mistral.engine import policies
+from mistral.engine import post_tx_queue
+from mistral.engine import workflow_handler as wf_handler
 from mistral import exceptions as exc
 from mistral import expressions as expr
 from mistral.notifiers import base as notif
@@ -49,7 +51,8 @@ class Task(object):
     """
 
     def __init__(self, wf_ex, wf_spec, task_spec, ctx, task_ex=None,
-                 unique_key=None, waiting=False, triggered_by=None):
+                 unique_key=None, waiting=False, triggered_by=None,
+                 rerun=False):
         self.wf_ex = wf_ex
         self.task_spec = task_spec
         self.ctx = ctx
@@ -58,6 +61,7 @@ class Task(object):
         self.unique_key = unique_key
         self.waiting = waiting
         self.triggered_by = triggered_by
+        self.rerun = rerun
         self.reset_flag = False
         self.created = False
         self.state_changed = False
@@ -118,6 +122,23 @@ class Task(object):
 
         This method puts task to a waiting state.
         """
+
+        # NOTE(rakhmerov): using named locks may cause problems under load
+        # with MySQL that raises a lot of deadlocks in case of high
+        # parallelism so it makes sense to do a fast check if the object
+        # already exists in DB outside of the lock.
+        if not self.task_ex:
+            t_execs = db_api.get_task_executions(
+                workflow_execution_id=self.wf_ex.id,
+                unique_key=self.unique_key,
+                state=states.WAITING
+            )
+
+            self.task_ex = t_execs[0] if t_execs else None
+
+        if self.task_ex:
+            return
+
         with db_api.named_lock(self.unique_key):
             if not self.task_ex:
                 t_execs = db_api.get_task_executions(
@@ -154,6 +175,12 @@ class Task(object):
         assert self.task_ex
 
         cur_state = self.task_ex.state
+
+        # Set initial started_at in case of waiting => running.
+        # We can't set this just in run_existing, because task retries
+        # will update started_at, which is incorrect.
+        if cur_state == states.WAITING and state == states.RUNNING:
+            self.save_started_time()
 
         if cur_state != state or self.task_ex.state_info != state_info:
             task_ex = db_api.update_task_execution_state(
@@ -249,10 +276,26 @@ class Task(object):
         # upon its completion.
         self.task_ex.processed = True
 
+        self.register_workflow_completion_check()
+
+        self.save_finished_time()
+
         # Publish task event.
         self.notify(old_task_state, self.task_ex.state)
 
         dispatcher.dispatch_workflow_commands(self.wf_ex, cmds)
+
+    def register_workflow_completion_check(self):
+        wf_ctrl = wf_base.get_controller(self.wf_ex, self.wf_spec)
+
+        # Register an asynchronous command to check workflow completion
+        # in a separate transaction if the task may potentially lead to
+        # workflow completion.
+        def _check():
+            wf_handler.check_and_complete(self.wf_ex.id)
+
+        if wf_ctrl.may_complete_workflow(self.task_ex):
+            post_tx_queue.register_operation(_check, in_tx=True)
 
     @profiler.trace('task-update')
     def update(self, state, state_info=None):
@@ -289,6 +332,9 @@ class Task(object):
             return
 
         self.set_state(state, state_info)
+
+        if states.is_completed(self.task_ex.state):
+            self.register_workflow_completion_check()
 
         # Publish event.
         self.notify(old_task_state, self.task_ex.state)
@@ -362,6 +408,18 @@ class Task(object):
 
         return env.get('__actions', {}).get(action_name, {})
 
+    def save_started_time(self, value='default'):
+        if not self.task_ex:
+            return
+        time = value if value is not 'default' else utils.utc_now_sec()
+        self.task_ex.started_at = time
+
+    def save_finished_time(self, value='default'):
+        if not self.task_ex:
+            return
+        time = value if value is not 'default' else utils.utc_now_sec()
+        self.task_ex.finished_at = time
+
 
 class RegularTask(Task):
     """Regular task.
@@ -375,8 +433,13 @@ class RegularTask(Task):
         # TODO(rakhmerov): Here we can define more informative messages for
         # cases when action is successful and when it's not. For example,
         # in state_info we can specify the cause action.
-        state_info = (None if state == states.SUCCESS
-                      else action_ex.output.get('result'))
+
+        if state == states.SUCCESS:
+            state_info = None
+        else:
+            action_result = action_ex.output.get('result')
+
+            state_info = str(action_result) if action_result else None
 
         self.complete(state, state_info)
 
@@ -399,15 +462,18 @@ class RegularTask(Task):
             return
 
         self._create_task_execution()
+        self.save_started_time()
 
         # Publish event.
         self.notify(None, self.task_ex.state)
 
         LOG.debug(
-            'Starting task [workflow=%s, task=%s, init_state=%s]',
-            self.wf_ex.name,
+            'Starting task [name=%s, init_state=%s, workflow_name=%s,'
+            ' execution_id=%s]',
             self.task_spec.get_name(),
-            self.task_ex.state
+            self.task_ex.state,
+            self.wf_ex.name,
+            self.wf_ex.id
         )
 
         self._before_task_start()
@@ -437,6 +503,15 @@ class RegularTask(Task):
 
         # Publish event.
         self.notify(old_task_state, self.task_ex.state)
+
+        if self.rerun:
+            self.save_started_time()
+            self.save_finished_time(value=None)
+            self._before_task_start()
+
+            # Policies could possibly change task state.
+            if self.task_ex.state != states.RUNNING:
+                return
 
         self._update_inbound_context()
         self._update_triggered_by()

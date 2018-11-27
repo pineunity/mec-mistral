@@ -13,24 +13,28 @@
 #    limitations under the License.
 
 import datetime
+import eventlet
+import sys
 
+from mistral import context as auth_ctx
 from mistral.db import utils as db_utils
 from mistral.db.v2 import api as db_api
 from mistral.engine import action_handler
-from mistral.engine import action_queue
-from mistral.services import scheduler
+from mistral.engine import post_tx_queue
 from mistral import utils
 from mistral_lib import actions as mistral_lib
 from oslo_config import cfg
 from oslo_log import log as logging
 
 LOG = logging.getLogger(__name__)
+
 CONF = cfg.CONF
-SCHEDULER_KEY = 'handle_expired_actions_key'
+
+_stopped = True
 
 
 @db_utils.retry_on_db_error
-@action_queue.process
+@post_tx_queue.run
 def handle_expired_actions():
     LOG.debug("Running heartbeat checker...")
 
@@ -41,37 +45,71 @@ def handle_expired_actions():
         seconds=max_missed * interval
     )
 
-    try:
-        with db_api.transaction():
-            action_exs = db_api.get_running_expired_sync_actions(exp_date)
+    with db_api.transaction():
+        action_exs = db_api.get_running_expired_sync_action_executions(
+            exp_date,
+            CONF.action_heartbeat.batch_size
+        )
 
-            LOG.debug("Found {} running and expired actions.".format(
-                len(action_exs))
+        LOG.debug("Found {} running and expired actions.".format(
+            len(action_exs))
+        )
+
+        if action_exs:
+            LOG.info(
+                "Actions executions to transit to error, because "
+                "heartbeat wasn't received: {}".format(action_exs)
             )
 
-            if action_exs:
-                LOG.info(
-                    "Actions executions to transit to error, because "
-                    "heartbeat wasn't received: {}".format(action_exs)
+            for action_ex in action_exs:
+                result = mistral_lib.Result(
+                    error="Heartbeat wasn't received."
                 )
 
-                for action_ex in action_exs:
-                    result = mistral_lib.Result(
-                        error="Heartbeat wasn't received."
-                    )
-
-                    action_handler.on_action_complete(action_ex, result)
-    finally:
-        schedule(interval)
+                action_handler.on_action_complete(action_ex, result)
 
 
-def setup():
+def _loop():
+    global _stopped
+
+    # This is an administrative thread so we need to set an admin
+    # security context.
+    auth_ctx.set_ctx(
+        auth_ctx.MistralContext(
+            user=None,
+            tenant=None,
+            auth_token=None,
+            is_admin=True
+        )
+    )
+
+    while not _stopped:
+        try:
+            handle_expired_actions()
+        except Exception:
+            LOG.exception(
+                'Action execution checker iteration failed'
+                ' due to unexpected exception.'
+            )
+
+            # For some mysterious reason (probably eventlet related)
+            # the exception is not cleared from the context automatically.
+            # This results in subsequent log.warning calls to show invalid
+            # info.
+            if sys.version_info < (3,):
+                sys.exc_clear()
+
+        eventlet.sleep(CONF.action_heartbeat.check_interval)
+
+
+def start():
     interval = CONF.action_heartbeat.check_interval
     max_missed = CONF.action_heartbeat.max_missed_heartbeats
+
     enabled = interval and max_missed
 
     if not enabled:
-        LOG.info("Action heartbeat reporting disabled.")
+        LOG.info("Action heartbeat reporting is disabled.")
 
         return
 
@@ -83,13 +121,14 @@ def setup():
         "heartbeats. ({} seconds)".format(wait_time)
     )
 
-    schedule(wait_time)
+    global _stopped
+
+    _stopped = False
+
+    eventlet.spawn_after(wait_time, _loop)
 
 
-def schedule(run_after):
-    scheduler.schedule_call(
-        None,
-        'mistral.services.action_execution_checker.handle_expired_actions',
-        run_after=run_after,
-        key=SCHEDULER_KEY
-    )
+def stop(graceful=False):
+    global _stopped
+
+    _stopped = True

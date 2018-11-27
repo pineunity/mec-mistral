@@ -15,8 +15,8 @@
 
 from mistral.db import utils as db_utils
 from mistral.db.v2 import api as db_api
-from mistral.engine import action_queue
 from mistral.engine import base
+from mistral.engine import post_tx_queue
 from mistral.engine import workflow_handler as wf_handler
 from mistral import expressions
 from mistral.services import scheduler
@@ -511,7 +511,7 @@ class ConcurrencyPolicy(base.TaskPolicy):
 
 
 @db_utils.retry_on_db_error
-@action_queue.process
+@post_tx_queue.run
 def _continue_task(task_ex_id):
     from mistral.engine import task_handler
 
@@ -520,20 +520,18 @@ def _continue_task(task_ex_id):
 
 
 @db_utils.retry_on_db_error
-@action_queue.process
+@post_tx_queue.run
 def _complete_task(task_ex_id, state, state_info):
     from mistral.engine import task_handler
 
     with db_api.transaction():
-        task_handler.complete_task(
-            db_api.get_task_execution(task_ex_id),
-            state,
-            state_info
-        )
+        task_ex = db_api.get_task_execution(task_ex_id)
+
+        task_handler.complete_task(task_ex, state, state_info)
 
 
 @db_utils.retry_on_db_error
-@action_queue.process
+@post_tx_queue.run
 def _fail_task_if_incomplete(task_ex_id, timeout):
     from mistral.engine import task_handler
 
@@ -543,8 +541,4 @@ def _fail_task_if_incomplete(task_ex_id, timeout):
         if not states.is_completed(task_ex.state):
             msg = 'Task timed out [timeout(s)=%s].' % timeout
 
-            task_handler.complete_task(
-                db_api.get_task_execution(task_ex_id),
-                states.ERROR,
-                msg
-            )
+            task_handler.complete_task(task_ex, states.ERROR, msg)

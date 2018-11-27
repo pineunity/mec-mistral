@@ -284,6 +284,14 @@ def _get_collection(model, insecure=False, limit=None, marker=None,
     return query.all()
 
 
+def _get_count(model, insecure=False, **filters):
+    query = b.model_query(model) if insecure else _secure_query(model)
+
+    query = db_filters.apply_filters(query, model, **filters)
+
+    return query.count()
+
+
 def _get_db_object_by_name(model, name, columns=()):
     query = _secure_query(model, *columns)
 
@@ -1135,6 +1143,11 @@ def get_delayed_calls(session=None, **kwargs):
 
 
 @b.session_aware()
+def get_delayed_calls_count(session=None, **kwargs):
+    return _get_count(model=models.DelayedCall, **kwargs)
+
+
+@b.session_aware()
 def delete_delayed_calls(session=None, **kwargs):
     return _delete_all(models.DelayedCall, **kwargs)
 
@@ -1269,7 +1282,8 @@ def get_expired_executions(expiration_time, limit=None, columns=(),
 
 
 @b.session_aware()
-def get_running_expired_sync_actions(expiration_time, session=None):
+def get_running_expired_sync_action_executions(expiration_time,
+                                               limit, session=None):
     query = b.model_query(models.ActionExecution)
 
     query = query.filter(
@@ -1277,6 +1291,9 @@ def get_running_expired_sync_actions(expiration_time, session=None):
     )
     query = query.filter_by(is_sync=True)
     query = query.filter(models.ActionExecution.state == states.RUNNING)
+
+    if limit:
+        query.limit(limit)
 
     return query.all()
 

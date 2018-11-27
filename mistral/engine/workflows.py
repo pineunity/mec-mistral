@@ -23,14 +23,15 @@ import six
 
 from mistral.db.v2 import api as db_api
 from mistral.db.v2.sqlalchemy import models as db_models
-from mistral.engine import action_queue
 from mistral.engine import dispatcher
+from mistral.engine import post_tx_queue
 from mistral.engine import utils as engine_utils
 from mistral import exceptions as exc
 from mistral import expressions as expr
 from mistral.lang import parser as spec_parser
 from mistral.notifiers import base as notif
 from mistral.notifiers import notification_events as events
+from mistral.rpc import clients as rpc
 from mistral.services import triggers
 from mistral.services import workflows as wf_service
 from mistral import utils
@@ -233,7 +234,7 @@ class Workflow(object):
 
         wf_service.update_workflow_execution_env(self.wf_ex, env)
 
-        self.set_state(states.RUNNING, recursive=True)
+        self._recursive_rerun()
 
         wf_ctrl = wf_base.get_controller(self.wf_ex)
 
@@ -247,6 +248,36 @@ class Workflow(object):
             policies.RetryPolicy.refresh_runtime_context(task_ex)
 
         self._continue_workflow(cmds)
+
+    def _recursive_rerun(self):
+        """Rerun all parent workflow executions recursively.
+
+        If there is a parent execution that it reruns as well.
+        """
+
+        from mistral.engine import workflow_handler
+
+        self.set_state(states.RUNNING)
+
+        # TODO(rakhmerov): We call a internal method of a module here.
+        # The simplest way is to make it public, however, I believe
+        # it's another "bad smell" that tells that some refactoring
+        # of the architecture should be made.
+        workflow_handler._schedule_check_and_fix_integrity(self.wf_ex)
+
+        if self.wf_ex.task_execution_id:
+            parent_task_ex = db_api.get_task_execution(
+                self.wf_ex.task_execution_id
+            )
+
+            parent_wf = Workflow(wf_ex=parent_task_ex.workflow_execution)
+
+            parent_wf.lock()
+
+            parent_wf._recursive_rerun()
+
+            from mistral.engine import task_handler
+            task_handler.rerun_task(parent_task_ex, parent_wf.wf_spec)
 
     def _get_backlog(self):
         return self.wf_ex.runtime_context.get(dispatcher.BACKLOG_KEY)
@@ -330,7 +361,7 @@ class Workflow(object):
         )
 
     @profiler.trace('workflow-set-state')
-    def set_state(self, state, state_info=None, recursive=False):
+    def set_state(self, state, state_info=None):
         assert self.wf_ex
 
         cur_state = self.wf_ex.state
@@ -344,7 +375,7 @@ class Workflow(object):
 
             if wf_ex is None:
                 # Do nothing because the state was updated previously.
-                return
+                return False
 
             self.wf_ex = wf_ex
             self.wf_ex.state_info = json.dumps(state_info) \
@@ -376,21 +407,7 @@ class Workflow(object):
 
             triggers.on_workflow_complete(self.wf_ex)
 
-        if recursive and self.wf_ex.task_execution_id:
-            parent_task_ex = db_api.get_task_execution(
-                self.wf_ex.task_execution_id
-            )
-
-            parent_wf = Workflow(wf_ex=parent_task_ex.workflow_execution)
-
-            parent_wf.lock()
-
-            parent_wf.set_state(state, recursive=recursive)
-
-            # TODO(rakhmerov): It'd be better to use instance of Task here.
-            parent_task_ex.state = state
-            parent_task_ex.state_info = None
-            parent_task_ex.processed = False
+        return True
 
     @profiler.trace('workflow-check-and-complete')
     def check_and_complete(self):
@@ -443,14 +460,17 @@ class Workflow(object):
         return 0
 
     def _succeed_workflow(self, final_context, msg=None):
-        self.wf_ex.output = data_flow.evaluate_workflow_output(
+        output = data_flow.evaluate_workflow_output(
             self.wf_ex,
             self.wf_spec.get_output(),
             final_context
         )
 
-        # Set workflow execution to success until after output is evaluated.
-        self.set_state(states.SUCCESS, msg)
+        # Set workflow execution to success after output is evaluated.
+        if not self.set_state(states.SUCCESS, msg):
+            return
+
+        self.wf_ex.output = output
 
         # Publish event.
         self.notify(events.WORKFLOW_SUCCEEDED)
@@ -478,7 +498,8 @@ class Workflow(object):
             )
             LOG.error(msg)
 
-        self.set_state(states.ERROR, state_info=msg)
+        if not self.set_state(states.ERROR, state_info=msg):
+            return
 
         # When we set an ERROR state we should safely set output value getting
         # w/o exceptions due to field size limitations.
@@ -510,7 +531,8 @@ class Workflow(object):
         if states.is_completed(self.wf_ex.state):
             return
 
-        self.set_state(states.CANCELLED, state_info=msg)
+        if not self.set_state(states.CANCELLED, state_info=msg):
+            return
 
         # When we set an ERROR state we should safely set output value getting
         # w/o exceptions due to field size limitations.
@@ -550,11 +572,16 @@ class Workflow(object):
                 " if a workflow is not in SUCCESS, ERROR or CANCELLED state."
             )
 
-        action_queue.schedule_on_action_complete(
-            self.wf_ex.id,
-            result,
-            wf_action=True
-        )
+        # Register a command executed in a separate thread to send the result
+        # to the parent workflow outside of the main DB transaction.
+        def _send_result():
+            rpc.get_engine_client().on_action_complete(
+                self.wf_ex.id,
+                result,
+                wf_action=True
+            )
+
+        post_tx_queue.register_operation(_send_result)
 
 
 def _get_environment(params):
